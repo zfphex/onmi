@@ -1,9 +1,16 @@
+pub mod audio;
 pub mod decoder;
 pub mod rb;
-use std::time::{Duration, Instant};
 
+use std::{path::Path, time::Duration};
+
+pub use audio::*;
 pub use decoder::*;
 pub use rb::*;
+
+//Scale the volume (0 - 100) down to something more reasonable to listen to.
+//TODO: This should be configurable.
+pub const VOLUME_REDUCTION: f32 = 75.0;
 
 pub const UNKNOWN_TITLE: &str = "Unknown Title";
 pub const UNKNOWN_ALBUM: &str = "Unknown Album";
@@ -37,157 +44,101 @@ impl Song {
     }
 }
 
-use wasapi::*;
-
-pub struct Wasapi {
-    pub client: IAudioClient,
-    pub render: IAudioRenderClient,
-    pub format: WAVEFORMATEXTENSIBLE,
-    pub enumerator: IMMDeviceEnumerator,
-    pub event: *mut c_void,
+pub struct Player {
+    volume: f32,
+    pub gain: f32,
+    pub decoder: Option<Symphonia>,
+    pub elapsed: Duration,
+    pub duration: Duration,
+    pub paused: bool,
+    pub stopped: bool,
 }
 
-impl Wasapi {
-    pub fn new() -> Self {
-        //Use the default sample rate.
-        Self::new_with_sample_rate(None)
-    }
-
-    pub fn new_with_sample_rate(sample_rate: Option<u32>) -> Self {
-        unsafe {
-            CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap();
-            set_pro_audio_thread();
-
-            let enumerator = IMMDeviceEnumerator::new().unwrap();
-            let device = enumerator
-                .GetDefaultAudioEndpoint(DataFlow::Render, Role::Console)
-                .unwrap();
-
-            let client: IAudioClient = device.Activate(ExecutionContext::All).unwrap();
-            let mut format =
-                (client.GetMixFormat().unwrap() as *const _ as *const WAVEFORMATEXTENSIBLE).read();
-
-            if format.Format.nChannels < 2 {
-                todo!("Support mono devices.");
-            }
-
-            //Update format to desired sample rate.
-            if let Some(sample_rate) = sample_rate {
-                assert!(COMMON_SAMPLE_RATES.contains(&sample_rate));
-                format.Format.nSamplesPerSec = sample_rate;
-                format.Format.nAvgBytesPerSec = sample_rate * format.Format.nBlockAlign as u32;
-            }
-
-            let (default, _) = client.GetDevicePeriod().unwrap();
-
-            client
-                .Initialize(
-                    ShareMode::Shared,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-                    default,
-                    0,
-                    &format as *const _ as *const WAVEFORMATEX,
-                    None,
-                )
-                .unwrap();
-
-            let event = CreateEventA(core::ptr::null_mut(), 0, 0, core::ptr::null_mut());
-            assert!(!event.is_null());
-            client.SetEventHandle(event as isize).unwrap();
-
-            let render: IAudioRenderClient = client.GetService().unwrap();
-            client.Start().unwrap();
-
-            Self {
-                enumerator,
-                client,
-                render,
-                format,
-                event,
-            }
+impl Player {
+    pub const fn new() -> Self {
+        Self {
+            volume: 15.0 / VOLUME_REDUCTION,
+            gain: 0.5,
+            decoder: None,
+            elapsed: Duration::new(0, 0),
+            duration: Duration::new(0, 0),
+            paused: true,
+            stopped: false,
         }
     }
 
-    pub fn update_sample_rate(&mut self, sample_rate: u32) {
-        let current_sample_rate = self.format.Format.nSamplesPerSec;
+    pub fn toggle_playback(&mut self) {
+        self.paused = !self.paused;
+    }
 
-        if current_sample_rate != sample_rate {
-            unsafe { self.client.Stop().unwrap() };
-            *self = Self::new_with_sample_rate(Some(sample_rate));
+    pub fn stop(&mut self) {
+        self.stopped = true;
+        self.decoder = None;
+    }
+
+    pub fn play_song(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
+        self.decoder = match Symphonia::new(&path) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                return Err(format!(
+                    "Failed to play: {}, Error: {e}",
+                    path.as_ref().to_string_lossy()
+                ));
+            }
+        };
+
+        Ok(())
+    }
+
+    pub fn play(&mut self) {
+        self.paused = false;
+    }
+
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+
+    pub fn set_volume(&mut self, volume: u8) {
+        self.volume = volume as f32 / VOLUME_REDUCTION;
+    }
+
+    pub fn volume(&mut self) -> u8 {
+        (self.volume * VOLUME_REDUCTION) as u8
+    }
+
+    //Position is a percentage between (1 - 100).
+    pub fn seek(&mut self, position: f32) {
+        if let Some(decoder) = &mut self.decoder {
+            self.elapsed = Duration::from_secs_f32(position);
+            decoder.seek(position);
         }
     }
 
-    #[inline]
-    pub const fn sample_rate(&self) -> u32 {
-        self.format.Format.nSamplesPerSec
-    }
+    pub fn seek_forward(&mut self) {
+        // info!(
+        //     "Seeking {} / {}",
+        //     sym.elapsed().as_secs_f32() + 10.0,
+        //     sym.duration().as_secs_f32()
+        // );
 
-    #[inline]
-    pub const fn block_align(&self) -> u16 {
-        self.format.Format.nBlockAlign
-    }
-
-    #[inline]
-    pub const fn channels(&self) -> u16 {
-        self.format.Format.nChannels
-    }
-
-    pub fn fill<F: FnMut(&mut [u8])>(&self, mut f: F) -> u32 {
-        unsafe {
-            let padding = self.client.GetCurrentPadding().unwrap();
-            let buffer_size = self.client.GetBufferSize().unwrap();
-            let block_align = self.block_align();
-            let frames = buffer_size - padding;
-
-            if frames == 0 {
-                return frames;
-            }
-
-            let size = (frames * block_align as u32) as usize;
-            let ptr = self.render.GetBuffer(frames).unwrap();
-            let buffer = std::slice::from_raw_parts_mut(ptr, size);
-
-            f(buffer);
-
-            self.render.ReleaseBuffer(frames, 0).unwrap();
-            return frames;
+        if let Some(decoder) = &mut self.decoder {
+            let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
+            self.elapsed = Duration::from_secs_f32(position);
+            decoder.seek(position);
         }
     }
 
-    pub fn run<F: FnMut(&mut [u8])>(self, mut f: F) {
-        unsafe {
-            let (period, _) = self.client.GetDevicePeriod().unwrap();
-            let period = Duration::from_nanos(period as u64 * 100);
-            let mut last_event = Instant::now();
+    pub fn seek_backwards(&mut self) {
+        // info!(
+        //     "Seeking {} / {}",
+        //     sym.elapsed().as_secs_f32() - 10.0,
+        //     sym.duration().as_secs_f32()
+        // );
 
-            loop {
-                WaitForSingleObject(self.event, u32::MAX);
-
-                let now = Instant::now();
-                let elapsed = now - last_event;
-                last_event = now;
-
-                if elapsed > period + Duration::from_millis(2) {
-                    println!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
-                }
-
-                let mut i = 0;
-                let mut frames = u32::MAX;
-
-                while frames != 0 {
-                    frames = self.fill(&mut f);
-
-                    if i > 1 {
-                        println!(
-                            "WARNING: Missed event(s) or underflow, buffer had space for {} frames! iteration: {}",
-                            frames, i
-                        );
-                    }
-                    i += 1;
-                }
-            }
+        if let Some(decoder) = &mut self.decoder {
+            let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
+            self.elapsed = Duration::from_secs_f32(position);
+            decoder.seek(position);
         }
     }
 }

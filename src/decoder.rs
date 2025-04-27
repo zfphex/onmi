@@ -16,44 +16,6 @@ use symphonia::{
     default::get_probe,
 };
 
-pub struct PacketReader {
-    pub sym: Symphonia,
-    pub buffer: Option<SampleBuffer<f32>>,
-    pub pos: usize,
-}
-
-impl PacketReader {
-    pub fn new(sym: Symphonia) -> Self {
-        Self {
-            sym,
-            buffer: None,
-            pos: 0,
-        }
-    }
-
-    pub fn next_sample(&mut self) -> f32 {
-        if self.buffer.is_none() {
-            if let Some(packet) = self.sym.next_packet() {
-                self.buffer = Some(packet);
-            }
-        }
-
-        if let Some(buffer) = &self.buffer {
-            if self.pos < buffer.samples().len() {
-                let sample = buffer.samples()[self.pos];
-                self.pos += 1;
-                return sample;
-            } else {
-                self.pos = 0;
-                self.buffer = None;
-                return self.next_sample();
-            }
-        }
-
-        return 0.0;
-    }
-}
-
 pub struct Symphonia {
     pub format_reader: Box<dyn FormatReader>,
     pub decoder: Box<dyn codecs::Decoder>,
@@ -62,6 +24,9 @@ pub struct Symphonia {
     pub duration: u64,
     pub error_count: u8,
     pub done: bool,
+
+    pub buffer: Option<SampleBuffer<f32>>,
+    pub pos: usize,
 }
 
 impl Symphonia {
@@ -93,6 +58,8 @@ impl Symphonia {
             elapsed: 0,
             error_count: 0,
             done: false,
+            buffer: None,
+            pos: 0,
         })
     }
 
@@ -126,6 +93,28 @@ impl Symphonia {
                 track_id: None,
             },
         );
+    }
+
+    pub fn next_sample(&mut self) -> f32 {
+        if self.buffer.is_none() {
+            if let Some(packet) = self.next_packet() {
+                self.buffer = Some(packet);
+            }
+        }
+
+        if let Some(buffer) = &self.buffer {
+            if self.pos < buffer.samples().len() {
+                let sample = buffer.samples()[self.pos];
+                self.pos += 1;
+                return sample;
+            } else {
+                self.pos = 0;
+                self.buffer = None;
+                return self.next_sample();
+            }
+        }
+
+        return 0.0;
     }
 
     pub fn next_packet(&mut self) -> Option<SampleBuffer<f32>> {

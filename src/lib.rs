@@ -1,9 +1,16 @@
+pub mod decoder;
+pub mod rb;
+use std::time::{Duration, Instant};
+
+pub use decoder::*;
+pub use rb::*;
+
 pub const UNKNOWN_TITLE: &str = "Unknown Title";
 pub const UNKNOWN_ALBUM: &str = "Unknown Album";
 pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
-
-pub mod rb;
-pub use rb::*;
+pub const COMMON_SAMPLE_RATES: [u32; 13] = [
+    5512, 8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000,
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Song {
@@ -30,145 +37,156 @@ impl Song {
     }
 }
 
-use std::io::ErrorKind;
-use std::time::Duration;
-use std::{fs::File, path::Path};
-use symphonia::core::errors::Error;
-use symphonia::core::formats::{FormatReader, Track};
-use symphonia::{
-    core::{
-        audio::SampleBuffer,
-        codecs,
-        formats::{FormatOptions, SeekMode, SeekTo},
-        io::MediaSourceStream,
-        meta::MetadataOptions,
-        probe::Hint,
-        units::Time,
-    },
-    default::get_probe,
-};
+use wasapi::*;
 
-pub struct Symphonia {
-    pub format_reader: Box<dyn FormatReader>,
-    pub decoder: Box<dyn codecs::Decoder>,
-    pub track: Track,
-    pub elapsed: u64,
-    pub duration: u64,
-    pub error_count: u8,
-    pub done: bool,
+pub struct Wasapi {
+    pub client: IAudioClient,
+    pub render: IAudioRenderClient,
+    pub format: WAVEFORMATEXTENSIBLE,
+    pub enumerator: IMMDeviceEnumerator,
+    pub event: *mut c_void,
 }
 
-impl Symphonia {
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = File::open(path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let probed = get_probe().format(
-            &Hint::default(),
-            mss,
-            &FormatOptions {
-                prebuild_seek_index: false,
-                seek_index_fill_rate: 20,
-                enable_gapless: false,
-            },
-            &MetadataOptions::default(),
-        )?;
-
-        let track = probed.format.default_track().unwrap().to_owned();
-        let n_frames = track.codec_params.n_frames.unwrap_or_default();
-        let duration = track.codec_params.start_ts + n_frames;
-        let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &codecs::DecoderOptions::default())?;
-
-        Ok(Self {
-            format_reader: probed.format,
-            decoder,
-            track,
-            duration,
-            elapsed: 0,
-            error_count: 0,
-            done: false,
-        })
-    }
-    pub fn elapsed(&self) -> Duration {
-        let tb = self.track.codec_params.time_base.unwrap();
-        let time = tb.calc_time(self.elapsed);
-        Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
-    }
-    pub fn duration(&self) -> Duration {
-        let tb = self.track.codec_params.time_base.unwrap();
-        let time = tb.calc_time(self.duration);
-        Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
-    }
-    pub fn sample_rate(&self) -> u32 {
-        self.track.codec_params.sample_rate.unwrap()
-    }
-    //TODO: I would like seeking out of bounds to play the next song.
-    //I can't trust symphonia to provide accurate errors so it's not worth the hassle.
-    //I could use pos + elapsed > duration but the duration isn't accurate.
-    pub fn seek(&mut self, pos: f32) {
-        let pos = Duration::from_secs_f32(pos);
-
-        //Ignore errors.
-        let _ = self.format_reader.seek(
-            SeekMode::Coarse,
-            SeekTo::Time {
-                time: Time::new(pos.as_secs(), pos.subsec_nanos() as f64 / 1_000_000_000.0),
-                track_id: None,
-            },
-        );
+impl Wasapi {
+    pub fn new() -> Self {
+        //Use the default sample rate.
+        Self::new_with_sample_rate(None)
     }
 
-    pub fn next_packet(&mut self) -> Option<SampleBuffer<f32>> {
-        mini::profile!();
-        if self.error_count > 2 || self.done {
-            return None;
-        }
+    pub fn new_with_sample_rate(sample_rate: Option<u32>) -> Self {
+        unsafe {
+            CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap();
+            set_pro_audio_thread();
 
-        let next_packet = match self.format_reader.next_packet() {
-            Ok(next_packet) => {
-                self.error_count = 0;
-                next_packet
+            let enumerator = IMMDeviceEnumerator::new().unwrap();
+            let device = enumerator
+                .GetDefaultAudioEndpoint(DataFlow::Render, Role::Console)
+                .unwrap();
+
+            let client: IAudioClient = device.Activate(ExecutionContext::All).unwrap();
+            let mut format =
+                (client.GetMixFormat().unwrap() as *const _ as *const WAVEFORMATEXTENSIBLE).read();
+
+            if format.Format.nChannels < 2 {
+                todo!("Support mono devices.");
             }
-            Err(err) => match err {
-                Error::IoError(e) if e.kind() == ErrorKind::UnexpectedEof => {
-                    //Just in case my 250ms addition is not enough.
-                    if self.elapsed() + Duration::from_secs(1) > self.duration() {
-                        self.done = true;
-                        return None;
-                    } else {
-                        self.error_count += 1;
-                        return self.next_packet();
+
+            //Update format to desired sample rate.
+            if let Some(sample_rate) = sample_rate {
+                assert!(COMMON_SAMPLE_RATES.contains(&sample_rate));
+                format.Format.nSamplesPerSec = sample_rate;
+                format.Format.nAvgBytesPerSec = sample_rate * format.Format.nBlockAlign as u32;
+            }
+
+            let (default, _) = client.GetDevicePeriod().unwrap();
+
+            client
+                .Initialize(
+                    ShareMode::Shared,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                    default,
+                    0,
+                    &format as *const _ as *const WAVEFORMATEX,
+                    None,
+                )
+                .unwrap();
+
+            let event = CreateEventA(core::ptr::null_mut(), 0, 0, core::ptr::null_mut());
+            assert!(!event.is_null());
+            client.SetEventHandle(event as isize).unwrap();
+
+            let render: IAudioRenderClient = client.GetService().unwrap();
+            client.Start().unwrap();
+
+            Self {
+                enumerator,
+                client,
+                render,
+                format,
+                event,
+            }
+        }
+    }
+
+    pub fn update_sample_rate(&mut self, sample_rate: u32) {
+        let current_sample_rate = self.format.Format.nSamplesPerSec;
+
+        if current_sample_rate != sample_rate {
+            unsafe { self.client.Stop().unwrap() };
+            *self = Self::new_with_sample_rate(Some(sample_rate));
+        }
+    }
+
+    #[inline]
+    pub const fn sample_rate(&self) -> u32 {
+        self.format.Format.nSamplesPerSec
+    }
+
+    #[inline]
+    pub const fn block_align(&self) -> u16 {
+        self.format.Format.nBlockAlign
+    }
+
+    #[inline]
+    pub const fn channels(&self) -> u16 {
+        self.format.Format.nChannels
+    }
+
+    pub fn fill<F: FnMut(&mut [u8])>(&self, mut f: F) -> u32 {
+        unsafe {
+            let padding = self.client.GetCurrentPadding().unwrap();
+            let buffer_size = self.client.GetBufferSize().unwrap();
+            let block_align = self.block_align();
+            let frames = buffer_size - padding;
+
+            if frames == 0 {
+                return frames;
+            }
+
+            let size = (frames * block_align as u32) as usize;
+            let ptr = self.render.GetBuffer(frames).unwrap();
+            let buffer = std::slice::from_raw_parts_mut(ptr, size);
+
+            f(buffer);
+
+            self.render.ReleaseBuffer(frames, 0).unwrap();
+            return frames;
+        }
+    }
+
+    pub fn run<F: FnMut(&mut [u8])>(self, mut f: F) {
+        unsafe {
+            let (period, _) = self.client.GetDevicePeriod().unwrap();
+            let period = Duration::from_nanos(period as u64 * 100);
+            let mut last_event = Instant::now();
+
+            loop {
+                WaitForSingleObject(self.event, u32::MAX);
+
+                let now = Instant::now();
+                let elapsed = now - last_event;
+                last_event = now;
+
+                if elapsed > period + Duration::from_millis(2) {
+                    println!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
+                }
+
+                let mut i = 0;
+                let mut frames = u32::MAX;
+
+                while frames != 0 {
+                    frames = self.fill(&mut f);
+
+                    if i > 1 {
+                        println!(
+                            "WARNING: Missed event(s) or underflow, buffer had space for {} frames! iteration: {}",
+                            frames, i
+                        );
                     }
+                    i += 1;
                 }
-                _ => {
-                    // gonk_core::log!("{}", err);
-                    self.error_count += 1;
-                    return self.next_packet();
-                }
-            },
-        };
-
-        self.elapsed = next_packet.ts();
-
-        //HACK: Sometimes the end of file error does not indicate the end of the file?
-        //The duration is a little bit longer than the maximum elapsed??
-        //The final packet will make the elapsed time move backwards???
-        if self.elapsed() + Duration::from_millis(250) > self.duration() {
-            self.done = true;
-            return None;
-        }
-
-        match self.decoder.decode(&next_packet) {
-            Ok(decoded) => {
-                let mut buffer =
-                    SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
-                buffer.copy_interleaved_ref(decoded);
-                Some(buffer)
-            }
-            Err(_) => {
-                // gonk_core::log!("{}", err);
-                self.error_count += 1;
-                self.next_packet()
             }
         }
     }

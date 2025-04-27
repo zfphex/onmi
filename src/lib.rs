@@ -1,12 +1,10 @@
 pub mod audio;
 pub mod decoder;
-pub mod rb;
-
-use std::{path::Path, time::Duration};
 
 pub use audio::*;
 pub use decoder::*;
-pub use rb::*;
+
+use std::{path::Path, time::Duration};
 
 //Scale the volume (0 - 100) down to something more reasonable to listen to.
 //TODO: This should be configurable.

@@ -43,7 +43,7 @@ impl Song {
 }
 
 pub struct Player {
-    volume: f32,
+    pub volume: f32,
     pub gain: f32,
     pub decoder: Option<Symphonia>,
     pub elapsed: Duration,

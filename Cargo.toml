@@ -1,0 +1,17 @@
+[package]
+name = "onmi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winwalk = "0.2.2"
+# wasapi = { git = "https://github.com/zx3no/wasapi", version = "0.1.0" }
+symphonia = { git = "https://github.com/pdeljanov/Symphonia", default-features = false, features = [
+    "flac",
+    "mp3",
+    "ogg",
+    "vorbis",
+    "opt-simd",
+] }
+wasapi = { version = "0.1.0", path = "../projects/wasapi" }
+crossbeam-queue = "0.3.12"

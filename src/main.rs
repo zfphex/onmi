@@ -52,8 +52,6 @@ pub unsafe fn create_wasapi(
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK
                 | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
                 | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-            //+10ms
-            // default + 10 * 10000,
             default,
             0,
             &format as *const _ as *const WAVEFORMATEX,
@@ -180,7 +178,7 @@ fn main() {
             last_event = now;
 
             if elapsed > period + Duration::from_millis(2) {
-                println!("Stutter risk: waited {:?} (expected {:?})", elapsed, period);
+                println!("waited {:?} (expected {:?})", elapsed, period);
             }
 
             loop {
@@ -205,7 +203,8 @@ fn main() {
                 let volume = volume * gain;
 
                 for bytes in output.chunks_mut(std::mem::size_of::<f32>() * channels) {
-                    for c in 0..channels {
+                    //Only allow for stereo outputs.
+                    for c in 0..channels.max(2) {
                         let sample = samples.pop_front().unwrap_or_default();
                         let value = (sample * volume).to_le_bytes();
                         bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
@@ -218,40 +217,5 @@ fn main() {
 
             i = 0;
         }
-
-        // let now = Instant::now();
-
-        // loop {
-
-        //     //Sample-rate probably changed if this fails.
-        //     let padding = audio.GetCurrentPadding().unwrap();
-        //     let buffer_size = audio.GetBufferSize().unwrap();
-        //     let n_frames = buffer_size - padding;
-        //     let size = (n_frames * block_align) as usize;
-        //     let b = render.GetBuffer(n_frames).unwrap();
-        //     let output = std::slice::from_raw_parts_mut(b, size);
-        //     let channels = format.Format.nChannels as usize;
-        //     let volume = volume * gain;
-
-        //     for bytes in output.chunks_mut(std::mem::size_of::<f32>() * channels) {
-        //         // let sample = pr.next_sample();
-        //         let sample = samples.pop_front().unwrap();
-        //         // let sample = recv.try_recv().unwrap_or_default();
-        //         let sample = (sample * volume).to_le_bytes();
-        //         bytes[0..4].copy_from_slice(&sample);
-
-        //         if channels > 1 {
-        //             let sample = samples.pop_front().unwrap();
-        //             // let sample = pr.next_sample();
-        //             // let sample = recv.try_recv().unwrap_or_default();
-        //             let sample = (sample * volume).to_le_bytes();
-        //             bytes[4..8].copy_from_slice(&sample);
-        //         }
-        //     }
-
-        //     render.ReleaseBuffer(n_frames, 0).unwrap();
-
-        //     WaitForSingleObject(event, u32::MAX);
-        // }
     }
 }

@@ -78,7 +78,6 @@ impl Symphonia {
         let duration = track.codec_params.start_ts + n_frames;
         let decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &codecs::DecoderOptions::default())?;
-        dbg!(decoder.codec_params());
 
         Ok(Self {
             format_reader: probed.format,
@@ -120,6 +119,7 @@ impl Symphonia {
     }
 
     pub fn next_packet(&mut self) -> Option<SampleBuffer<f32>> {
+        mini::profile!();
         if self.error_count > 2 || self.done {
             return None;
         }

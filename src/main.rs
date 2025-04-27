@@ -1,5 +1,11 @@
 #![allow(static_mut_refs, unused, unsafe_op_in_unsafe_fn)]
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
+
 use crossbeam_queue::ArrayQueue;
+use mini::{defer_results, profile};
 use onmi::*;
 use symphonia::core::audio::SampleBuffer;
 use wasapi::*;
@@ -95,6 +101,7 @@ impl PacketRequest {
 
 //TODO: Warn user when packets are dropped.
 fn main() {
+    defer_results!();
     unsafe {
         CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap();
         let enumerator = IMMDeviceEnumerator::new().unwrap();
@@ -131,22 +138,41 @@ fn main() {
             block_align = format.Format.nBlockAlign as u32;
         }
 
-        let mut pr = PacketRequest {
-            sym,
-            buffer: None,
-            pos: 0,
-        };
+        // let mut pr = PacketRequest {
+        //     sym,
+        //     buffer: None,
+        //     pos: 0,
+        // };
+
+        let mut samples: VecDeque<f32> = VecDeque::new();
+
+        while let Some(packet) = sym.next_packet() {
+            for sample in packet.samples() {
+                samples.push_back(*sample);
+            }
+        }
+
+        // let (send, recv) = std::sync::mpsc::sync_channel(44100 * 1000);
+
+        // std::thread::spawn(move || {
+        //     while let Some(packet) = sym.next_packet() {
+        //         for sample in packet.samples() {
+        //             send.send(*sample).unwrap();
+        //         }
+        //     }
+        // });
+
+        let now = Instant::now();
 
         loop {
-            WaitForSingleObject(event, u32::MAX);
+            // if now.elapsed() >= Duration::from_secs(5) {
+            //     return;
+            // }
 
             //Sample-rate probably changed if this fails.
             let padding = audio.GetCurrentPadding().unwrap();
             let buffer_size = audio.GetBufferSize().unwrap();
-
             let n_frames = buffer_size - 1 - padding;
-            debug_assert!(n_frames < buffer_size - padding);
-
             let size = (n_frames * block_align) as usize;
             let b = render.GetBuffer(n_frames).unwrap();
             let output = std::slice::from_raw_parts_mut(b, size);
@@ -154,18 +180,24 @@ fn main() {
             let volume = volume * gain;
 
             for bytes in output.chunks_mut(std::mem::size_of::<f32>() * channels) {
-                let sample = pr.next_sample();
+                // let sample = pr.next_sample();
+                let sample = samples.pop_front().unwrap_or_default();
+                // let sample = recv.try_recv().unwrap_or_default();
                 let sample = (sample * volume).to_le_bytes();
                 bytes[0..4].copy_from_slice(&sample);
 
                 if channels > 1 {
-                    let sample = pr.next_sample();
+                    let sample = samples.pop_front().unwrap_or_default();
+                    // let sample = pr.next_sample();
+                    // let sample = recv.try_recv().unwrap_or_default();
                     let sample = (sample * volume).to_le_bytes();
                     bytes[4..8].copy_from_slice(&sample);
                 }
             }
 
             render.ReleaseBuffer(n_frames, 0).unwrap();
+
+            WaitForSingleObject(event, u32::MAX);
         }
     }
 }

@@ -3,6 +3,12 @@ name = "onmi"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+profile = ["mini/profile", "wasapi/profile"]
+info = ["mini/info"]
+warn = ["mini/warn"]
+error = ["mini/error"]
+
 [dependencies]
 winwalk = "0.2.2"
 # wasapi = { git = "https://github.com/zx3no/wasapi", version = "0.1.0" }
@@ -13,5 +19,6 @@ symphonia = { git = "https://github.com/pdeljanov/Symphonia", default-features =
     "vorbis",
     "opt-simd",
 ] }
-wasapi = { version = "0.1.0", path = "../projects/wasapi" }
+wasapi = { version = "0.1.0", path = "../wasapi" }
 crossbeam-queue = "0.3.12"
+mini = { version = "0.1.0", path = "../mini"}

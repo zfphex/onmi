@@ -69,6 +69,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
+name = "mini"
+version = "0.1.0"
+
+[[package]]
 name = "num-complex"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -100,6 +104,7 @@ name = "onmi"
 version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
+ "mini",
  "symphonia",
  "wasapi",
  "winwalk",
@@ -244,6 +249,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "wasapi"
 version = "0.1.0"
+dependencies = [
+ "mini",
+]
 
 [[package]]
 name = "winwalk"

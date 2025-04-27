@@ -52,8 +52,10 @@ pub unsafe fn create_wasapi(
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK
                 | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
                 | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            //+10ms
+            // default + 10 * 10000,
             default,
-            default,
+            0,
             &format as *const _ as *const WAVEFORMATEX,
             None,
         )
@@ -104,6 +106,7 @@ fn main() {
     defer_results!();
     unsafe {
         CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap();
+        let task_index = set_pro_audio_thread();
         let enumerator = IMMDeviceEnumerator::new().unwrap();
         let device = enumerator
             .GetDefaultAudioEndpoint(DataFlow::Render, Role::Console)
@@ -118,10 +121,11 @@ fn main() {
         let mut gain = 0.5;
 
         let mut paused = false;
-        let volume = 5.0 / 75.0;
+        let volume = 10.0 / 75.0;
 
         let mut sym = Symphonia::new(
-            r"D:\OneDrive\Music\Otuka\still save a seat for you - don't worry about me\Otuka - still save a seat for you.flac",
+            // r"D:\OneDrive\Music\Otuka\still save a seat for you - don't worry about me\Otuka - still save a seat for you.flac",
+            r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac",
         )
         .unwrap();
 
@@ -162,42 +166,92 @@ fn main() {
         //     }
         // });
 
-        let now = Instant::now();
+        let (period, _) = audio.GetDevicePeriod().unwrap();
+        let period = Duration::from_nanos(period as u64 * 100);
+        let mut last_event = Instant::now();
 
         loop {
-            // if now.elapsed() >= Duration::from_secs(5) {
-            //     return;
-            // }
+            WaitForSingleObject(event, u32::MAX);
 
-            //Sample-rate probably changed if this fails.
-            let padding = audio.GetCurrentPadding().unwrap();
-            let buffer_size = audio.GetBufferSize().unwrap();
-            let n_frames = buffer_size - 1 - padding;
-            let size = (n_frames * block_align) as usize;
-            let b = render.GetBuffer(n_frames).unwrap();
-            let output = std::slice::from_raw_parts_mut(b, size);
-            let channels = format.Format.nChannels as usize;
-            let volume = volume * gain;
+            let mut i = 0;
 
-            for bytes in output.chunks_mut(std::mem::size_of::<f32>() * channels) {
-                // let sample = pr.next_sample();
-                let sample = samples.pop_front().unwrap_or_default();
-                // let sample = recv.try_recv().unwrap_or_default();
-                let sample = (sample * volume).to_le_bytes();
-                bytes[0..4].copy_from_slice(&sample);
+            let now = Instant::now();
+            let elapsed = now - last_event;
+            last_event = now;
 
-                if channels > 1 {
-                    let sample = samples.pop_front().unwrap_or_default();
-                    // let sample = pr.next_sample();
-                    // let sample = recv.try_recv().unwrap_or_default();
-                    let sample = (sample * volume).to_le_bytes();
-                    bytes[4..8].copy_from_slice(&sample);
-                }
+            if elapsed > period + Duration::from_millis(2) {
+                println!("Stutter risk: waited {:?} (expected {:?})", elapsed, period);
             }
 
-            render.ReleaseBuffer(n_frames, 0).unwrap();
+            loop {
+                let padding = audio.GetCurrentPadding().unwrap();
+                let buffer_size = audio.GetBufferSize().unwrap();
+                let n_frames = buffer_size - padding;
 
-            WaitForSingleObject(event, u32::MAX);
+                if n_frames == 0 {
+                    break;
+                }
+
+                if i == 1 {
+                    println!(
+                        "WARNING: Missed event(s) or underflow, buffer had space for {n_frames} frames!"
+                    );
+                }
+
+                let size = (n_frames * block_align) as usize;
+                let b = render.GetBuffer(n_frames).unwrap();
+                let output = std::slice::from_raw_parts_mut(b, size);
+                let channels = format.Format.nChannels as usize;
+                let volume = volume * gain;
+
+                for bytes in output.chunks_mut(std::mem::size_of::<f32>() * channels) {
+                    for c in 0..channels {
+                        let sample = samples.pop_front().unwrap_or_default();
+                        let value = (sample * volume).to_le_bytes();
+                        bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
+                    }
+                }
+
+                render.ReleaseBuffer(n_frames, 0).unwrap();
+                i += 1;
+            }
+
+            i = 0;
         }
+
+        // let now = Instant::now();
+
+        // loop {
+
+        //     //Sample-rate probably changed if this fails.
+        //     let padding = audio.GetCurrentPadding().unwrap();
+        //     let buffer_size = audio.GetBufferSize().unwrap();
+        //     let n_frames = buffer_size - padding;
+        //     let size = (n_frames * block_align) as usize;
+        //     let b = render.GetBuffer(n_frames).unwrap();
+        //     let output = std::slice::from_raw_parts_mut(b, size);
+        //     let channels = format.Format.nChannels as usize;
+        //     let volume = volume * gain;
+
+        //     for bytes in output.chunks_mut(std::mem::size_of::<f32>() * channels) {
+        //         // let sample = pr.next_sample();
+        //         let sample = samples.pop_front().unwrap();
+        //         // let sample = recv.try_recv().unwrap_or_default();
+        //         let sample = (sample * volume).to_le_bytes();
+        //         bytes[0..4].copy_from_slice(&sample);
+
+        //         if channels > 1 {
+        //             let sample = samples.pop_front().unwrap();
+        //             // let sample = pr.next_sample();
+        //             // let sample = recv.try_recv().unwrap_or_default();
+        //             let sample = (sample * volume).to_le_bytes();
+        //             bytes[4..8].copy_from_slice(&sample);
+        //         }
+        //     }
+
+        //     render.ReleaseBuffer(n_frames, 0).unwrap();
+
+        //     WaitForSingleObject(event, u32::MAX);
+        // }
     }
 }

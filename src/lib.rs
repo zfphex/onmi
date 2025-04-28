@@ -1,10 +1,14 @@
+#![allow(unused, static_mut_refs)]
 pub mod audio;
 pub mod decoder;
 
 pub use audio::*;
 pub use decoder::*;
 
-use std::{path::Path, time::Duration};
+use std::path::Path;
+
+//Probably not good to re-export this.
+pub use std::time::Duration;
 
 //Scale the volume (0 - 100) down to something more reasonable to listen to.
 //TODO: This should be configurable.
@@ -42,10 +46,32 @@ impl Song {
     }
 }
 
-pub struct Player {
+pub struct PlaybackThread {
+    pub decoder: Option<Symphonia>,
+    pub output: Option<WasapiOutput>,
     pub volume: f32,
     pub gain: f32,
-    pub decoder: Option<Symphonia>,
+}
+
+impl PlaybackThread {
+    pub const fn new() -> Self {
+        Self {
+            decoder: None,
+            output: None,
+            volume: (15.0 / VOLUME_REDUCTION) * 0.5,
+            gain: 0.5,
+        }
+    }
+    pub fn update_decoder(&mut self, symphonia: Symphonia) {
+        //TODO: Update gain.
+        // self.gain = symphonia
+        self.decoder = Some(symphonia);
+    }
+}
+
+static mut PLAYBACK: PlaybackThread = PlaybackThread::new();
+
+pub struct Player {
     pub elapsed: Duration,
     pub duration: Duration,
     pub paused: bool,
@@ -53,11 +79,36 @@ pub struct Player {
 }
 
 impl Player {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        let f = std::thread::spawn(|| {
+            unsafe { PLAYBACK.output = Some(WasapiOutput::new()) };
+            let channels = unsafe { PLAYBACK.output.as_mut().unwrap().channels() } as usize;
+
+            move |buffer: &mut [u8]| {
+                for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
+                    //Only allow for stereo outputs.
+                    for c in 0..channels.max(2) {
+                        unsafe {
+                            if let Some(ref mut decoder) = PLAYBACK.decoder {
+                                let sample = decoder.next_sample();
+                                let value =
+                                    (sample * PLAYBACK.volume * PLAYBACK.gain).to_le_bytes();
+                                bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .join()
+        .unwrap();
+
+        //Wait for the thread to finish so that immediate pauses will work.
+        std::thread::spawn(move || {
+            unsafe { PLAYBACK.output.as_mut().unwrap().run(f) };
+        });
+
         Self {
-            volume: 15.0 / VOLUME_REDUCTION,
-            gain: 0.5,
-            decoder: None,
             elapsed: Duration::new(0, 0),
             duration: Duration::new(0, 0),
             paused: true,
@@ -71,12 +122,12 @@ impl Player {
 
     pub fn stop(&mut self) {
         self.stopped = true;
-        self.decoder = None;
+        unsafe { PLAYBACK.decoder = None };
     }
 
     pub fn play_song(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
-        self.decoder = match Symphonia::new(&path) {
-            Ok(s) => Some(s),
+        let decoder = match Symphonia::new(&path) {
+            Ok(s) => s,
             Err(e) => {
                 return Err(format!(
                     "Failed to play: {}, Error: {e}",
@@ -85,30 +136,38 @@ impl Player {
             }
         };
 
+        unsafe { PLAYBACK.update_decoder(decoder) };
+
         Ok(())
     }
 
     pub fn play(&mut self) {
         self.paused = false;
+
+        if let Some(output) = unsafe { &mut PLAYBACK.output } {
+            output.play();
+        }
     }
 
     pub fn pause(&mut self) {
         self.paused = true;
+
+        if let Some(output) = unsafe { &mut PLAYBACK.output } {
+            output.pause();
+        }
     }
 
     pub fn set_volume(&mut self, volume: u8) {
-        self.volume = volume as f32 / VOLUME_REDUCTION;
+        unsafe { PLAYBACK.volume = volume as f32 / VOLUME_REDUCTION }
     }
 
     pub fn volume(&mut self) -> u8 {
-        (self.volume * VOLUME_REDUCTION) as u8
+        (unsafe { PLAYBACK.volume } * VOLUME_REDUCTION) as u8
     }
 
-    //Position is a percentage between (1 - 100).
-    pub fn seek(&mut self, position: f32) {
-        if let Some(decoder) = &mut self.decoder {
-            self.elapsed = Duration::from_secs_f32(position);
-            decoder.seek(position);
+    pub fn seek(&mut self, position: Duration) {
+        if let Some(decoder) = unsafe { &mut PLAYBACK.decoder } {
+            decoder.seek(position.as_secs_f32());
         }
     }
 
@@ -119,11 +178,11 @@ impl Player {
         //     sym.duration().as_secs_f32()
         // );
 
-        if let Some(decoder) = &mut self.decoder {
-            let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
-            self.elapsed = Duration::from_secs_f32(position);
-            decoder.seek(position);
-        }
+        // if let Some(decoder) = &mut self.decoder {
+        //     let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
+        //     self.elapsed = Duration::from_secs_f32(position);
+        //     decoder.seek(position);
+        // }
     }
 
     pub fn seek_backwards(&mut self) {
@@ -133,10 +192,10 @@ impl Player {
         //     sym.duration().as_secs_f32()
         // );
 
-        if let Some(decoder) = &mut self.decoder {
-            let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
-            self.elapsed = Duration::from_secs_f32(position);
-            decoder.seek(position);
-        }
+        // if let Some(decoder) = &mut self.decoder {
+        //     let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
+        //     self.elapsed = Duration::from_secs_f32(position);
+        //     decoder.seek(position);
+        // }
     }
 }

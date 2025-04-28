@@ -2,15 +2,16 @@ use crate::*;
 use std::time::{Duration, Instant};
 use wasapi::*;
 
-pub struct Audio {
+pub struct WasapiOutput {
     pub client: IAudioClient,
     pub render: IAudioRenderClient,
     pub format: WAVEFORMATEXTENSIBLE,
     pub enumerator: IMMDeviceEnumerator,
     pub event: *mut c_void,
+    pub playing: bool,
 }
 
-impl Audio {
+impl WasapiOutput {
     pub fn new() -> Self {
         //Use the default sample rate.
         Self::new_with_sample_rate(None)
@@ -19,7 +20,7 @@ impl Audio {
     pub fn new_with_sample_rate(sample_rate: Option<u32>) -> Self {
         unsafe {
             CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap();
-            set_pro_audio_thread();
+            // set_pro_audio_thread();
 
             let enumerator = IMMDeviceEnumerator::new().unwrap();
             let device = enumerator
@@ -69,6 +70,7 @@ impl Audio {
                 render,
                 format,
                 event,
+                playing: true,
             }
         }
     }
@@ -111,6 +113,14 @@ impl Audio {
         self.format.Format.nChannels
     }
 
+    pub const fn play(&mut self) {
+        self.playing = true;
+    }
+
+    pub const fn pause(&mut self) {
+        self.playing = false;
+    }
+
     pub fn fill<F: FnMut(&mut [u8])>(&self, mut f: F) -> u32 {
         unsafe {
             let padding = self.client.GetCurrentPadding().unwrap();
@@ -133,11 +143,12 @@ impl Audio {
         }
     }
 
-    pub fn run<F: FnMut(&mut [u8])>(self, mut f: F) {
+    pub fn run<F: FnMut(&mut [u8])>(&self, mut f: F) {
         unsafe {
             let (period, _) = self.client.GetDevicePeriod().unwrap();
             let period = Duration::from_nanos(period as u64 * 100);
             let mut last_event = Instant::now();
+            set_pro_audio_thread();
 
             loop {
                 WaitForSingleObject(self.event, u32::MAX);
@@ -154,7 +165,11 @@ impl Audio {
                 let mut frames = u32::MAX;
 
                 while frames != 0 {
-                    frames = self.fill(&mut f);
+                    if self.playing {
+                        frames = self.fill(&mut f);
+                    } else {
+                        frames = 0;
+                    }
 
                     if i > 1 {
                         println!(

@@ -21,7 +21,8 @@ fn main() {
     player.set_volume(2);
     println!("Volume: {}", player.volume());
     player.seek_forward();
-    player.seek_backward();
+    println!("{:#?}", player.duration());
+    // player.seek_backward();
 
     //Main loop
     loop {

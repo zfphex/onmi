@@ -3,6 +3,7 @@ use std::time::Duration;
 use std::{fs::File, path::Path};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, Track};
+use symphonia::core::units::TimeBase;
 use symphonia::{
     core::{
         audio::SampleBuffer,
@@ -20,13 +21,13 @@ pub struct Symphonia {
     pub format_reader: Box<dyn FormatReader>,
     pub decoder: Box<dyn codecs::Decoder>,
     pub track: Track,
-    pub elapsed: u64,
-    pub duration: u64,
     pub error_count: u8,
     pub done: bool,
-
     pub buffer: Option<SampleBuffer<f32>>,
     pub pos: usize,
+    elapsed: u64,
+    duration: u64,
+    time_base: TimeBase,
 }
 
 impl Symphonia {
@@ -47,6 +48,7 @@ impl Symphonia {
         let track = probed.format.default_track().unwrap().to_owned();
         let n_frames = track.codec_params.n_frames.unwrap_or_default();
         let duration = track.codec_params.start_ts + n_frames;
+        let time_base = track.codec_params.time_base.unwrap();
         let decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &codecs::DecoderOptions::default())?;
 
@@ -60,18 +62,17 @@ impl Symphonia {
             done: false,
             buffer: None,
             pos: 0,
+            time_base,
         })
     }
 
     pub fn elapsed(&self) -> Duration {
-        let tb = self.track.codec_params.time_base.unwrap();
-        let time = tb.calc_time(self.elapsed);
+        let time = self.time_base.calc_time(self.elapsed);
         Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
     }
 
     pub fn duration(&self) -> Duration {
-        let tb = self.track.codec_params.time_base.unwrap();
-        let time = tb.calc_time(self.duration);
+        let time = self.time_base.calc_time(self.duration);
         Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
     }
 

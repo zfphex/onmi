@@ -13,7 +13,6 @@ pub use std::time::Duration;
 //Scale the volume (0 - 100) down to something more reasonable to listen to.
 //TODO: This should be configurable.
 pub const VOLUME_REDUCTION: f32 = 75.0;
-
 pub const UNKNOWN_TITLE: &str = "Unknown Title";
 pub const UNKNOWN_ALBUM: &str = "Unknown Album";
 pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
@@ -72,10 +71,9 @@ impl PlaybackThread {
 static mut PLAYBACK: PlaybackThread = PlaybackThread::new();
 
 pub struct Player {
-    pub elapsed: Duration,
-    pub duration: Duration,
-    pub paused: bool,
-    pub stopped: bool,
+    elapsed: Duration,
+    paused: bool,
+    stopped: bool,
 }
 
 impl Player {
@@ -110,10 +108,29 @@ impl Player {
 
         Self {
             elapsed: Duration::new(0, 0),
-            duration: Duration::new(0, 0),
             paused: true,
             stopped: false,
         }
+    }
+
+    /// TODO: Fixme
+    /// This allows for the player to be slightly out of sync with the playback thread.
+    /// If the user askes to seek and then reads the elapsed time immediately after.
+    /// It will not be up to date, because seeking can take time to process.
+    pub fn elapsed(&mut self) -> Duration {
+        let elapsed = self.elapsed;
+        if let Some(decoder) = unsafe { &mut PLAYBACK.decoder } {
+            self.elapsed = decoder.elapsed();
+        }
+        return elapsed;
+    }
+
+    pub fn duration(&self) -> Option<Duration> {
+        if let Some(decoder) = unsafe { &mut PLAYBACK.decoder } {
+            return Some(decoder.duration());
+        }
+
+        None
     }
 
     pub fn toggle_playback(&mut self) {
@@ -173,12 +190,6 @@ impl Player {
     }
 
     pub fn seek_forward(&mut self) {
-        // info!(
-        //     "Seeking {} / {}",
-        //     sym.elapsed().as_secs_f32() + 10.0,
-        //     sym.duration().as_secs_f32()
-        // );
-
         if let Some(decoder) = unsafe { &mut PLAYBACK.decoder } {
             let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
             self.elapsed = Duration::from_secs_f32(position);
@@ -187,12 +198,6 @@ impl Player {
     }
 
     pub fn seek_backward(&mut self) {
-        // info!(
-        //     "Seeking {} / {}",
-        //     sym.elapsed().as_secs_f32() - 10.0,
-        //     sym.duration().as_secs_f32()
-        // );
-
         if let Some(decoder) = unsafe { &mut PLAYBACK.decoder } {
             let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
             self.elapsed = Duration::from_secs_f32(position);

@@ -19,7 +19,9 @@ fn main() {
         .unwrap();
 
     player.set_volume(2);
-    dbg!(player.volume());
+    println!("Volume: {}", player.volume());
+    player.seek_forward();
+    player.seek_backward();
 
     //Main loop
     loop {

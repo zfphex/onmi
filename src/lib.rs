@@ -167,6 +167,7 @@ impl Player {
 
     pub fn seek(&mut self, position: Duration) {
         if let Some(decoder) = unsafe { &mut PLAYBACK.decoder } {
+            self.elapsed = position;
             decoder.seek(position.as_secs_f32());
         }
     }
@@ -178,24 +179,24 @@ impl Player {
         //     sym.duration().as_secs_f32()
         // );
 
-        // if let Some(decoder) = &mut self.decoder {
-        //     let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
-        //     self.elapsed = Duration::from_secs_f32(position);
-        //     decoder.seek(position);
-        // }
+        if let Some(decoder) = unsafe { &mut PLAYBACK.decoder } {
+            let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
+            self.elapsed = Duration::from_secs_f32(position);
+            decoder.seek(position);
+        }
     }
 
-    pub fn seek_backwards(&mut self) {
+    pub fn seek_backward(&mut self) {
         // info!(
         //     "Seeking {} / {}",
         //     sym.elapsed().as_secs_f32() - 10.0,
         //     sym.duration().as_secs_f32()
         // );
 
-        // if let Some(decoder) = &mut self.decoder {
-        //     let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
-        //     self.elapsed = Duration::from_secs_f32(position);
-        //     decoder.seek(position);
-        // }
+        if let Some(decoder) = unsafe { &mut PLAYBACK.decoder } {
+            let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
+            self.elapsed = Duration::from_secs_f32(position);
+            decoder.seek(position);
+        }
     }
 }

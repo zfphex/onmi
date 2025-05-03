@@ -16,6 +16,25 @@ impl<T> ThreadCell<T> {
             write_thread: None,
         }
     }
+
+    /// Reset the write thread id.
+    /// Allows for multiple threads write data, under user defined conditions.
+    /// ```
+    /// std::thread::spawn(|| {
+    ///     //Write some data.
+    /// }).join().unwrap();
+    ///
+    /// //data.reset()
+    ///
+    /// std::thread::spawn(|| {
+    ///     loop {
+    ///         //Write some more data.
+    ///     }
+    /// });
+    /// ```
+    pub const unsafe fn reset(&mut self) {
+        self.write_thread = None
+    }
 }
 
 impl<T> Deref for ThreadCell<T> {
@@ -27,6 +46,7 @@ impl<T> Deref for ThreadCell<T> {
     }
 }
 
+//Do not allow for double writes.
 impl<T> DerefMut for ThreadCell<T> {
     #[track_caller]
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -34,7 +54,7 @@ impl<T> DerefMut for ThreadCell<T> {
         if let Some(write_thread) = self.write_thread {
             if id != write_thread {
                 panic!(
-                    "Tried to read data from {:?} but it has already been mutability accessed from {:?}.",
+                    "Tried to write data from {:?} but it has already been mutability accessed from {:?}.",
                     id, write_thread
                 );
             }

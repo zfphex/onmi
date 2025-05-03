@@ -1,0 +1,47 @@
+use std::{
+    ops::{Deref, DerefMut},
+    thread::ThreadId,
+};
+
+#[derive(Debug, Clone)]
+pub struct ThreadCell<T> {
+    data: T,
+    write_thread: Option<ThreadId>,
+}
+
+impl<T> ThreadCell<T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            data,
+            write_thread: None,
+        }
+    }
+}
+
+impl<T> Deref for ThreadCell<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        //We don't care how many threads read the data.
+        &self.data
+    }
+}
+
+impl<T> DerefMut for ThreadCell<T> {
+    #[track_caller]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let id = std::thread::current().id();
+        if let Some(write_thread) = self.write_thread {
+            if id != write_thread {
+                panic!(
+                    "Tried to read data from {:?} but it has already been mutability accessed from {:?}.",
+                    id, write_thread
+                );
+            }
+        } else {
+            self.write_thread = Some(id);
+        }
+
+        &mut self.data
+    }
+}

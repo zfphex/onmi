@@ -1,9 +1,11 @@
 #![allow(unused, static_mut_refs)]
 pub mod audio;
 pub mod decoder;
+pub mod thread_cell;
 
 pub use audio::*;
 pub use decoder::*;
+pub use thread_cell::*;
 
 use std::path::Path;
 
@@ -68,7 +70,10 @@ impl PlaybackThread {
     }
 }
 
+//TODO: Will need to split up the playback thread into individual static mut's with ThreadCell.
 static mut PLAYBACK: PlaybackThread = PlaybackThread::new();
+
+//static mut PLAYBACK: ThreadCell<PlaybackThread> = ThreadCell::new(PlaybackThread::new());
 
 pub struct Player {
     elapsed: Duration,

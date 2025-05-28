@@ -64,8 +64,8 @@ impl PlaybackThread {
     pub fn update_decoder(&mut self, symphonia: Symphonia) {
         //TODO: Update gain.
         // self.gain = symphonia
-        unsafe { DECODER.reset_thread() };
-        unsafe { *DECODER = Some(symphonia) };
+        // unsafe { DECODER.reset_thread() };
+        unsafe { DECODER = Some(symphonia) };
     }
 }
 
@@ -74,7 +74,8 @@ impl PlaybackThread {
 
 static mut PLAYBACK: ThreadCell<PlaybackThread> = ThreadCell::new(PlaybackThread::new());
 
-static mut DECODER: ThreadCell<Option<Symphonia>> = ThreadCell::new(None);
+// static mut DECODER: ThreadCell<Option<Symphonia>> = ThreadCell::new(None);
+static mut DECODER: Option<Symphonia> = None;
 
 pub struct Player {
     elapsed: Duration,
@@ -85,6 +86,7 @@ pub struct Player {
 impl Player {
     pub fn new() -> Self {
         let f = std::thread::spawn(|| {
+            eprintln!("OUTPUT CREATION THREAD: {:?}", std::thread::current().id());
             unsafe { PLAYBACK.output = Some(WasapiOutput::new()) };
             let channels = unsafe { PLAYBACK.output.as_mut().unwrap().channels() } as usize;
 
@@ -111,7 +113,10 @@ impl Player {
         unsafe { PLAYBACK.reset_thread() };
 
         //Wait for the thread to finish so that immediate pauses will work.
+
+        //This thread runs in a loop forever filling the buffer with samples.
         std::thread::spawn(move || {
+            eprintln!("PLAYBACK THREAD: {:?}", std::thread::current().id());
             unsafe { PLAYBACK.output.as_mut().unwrap().run(f) };
         });
 
@@ -148,7 +153,7 @@ impl Player {
 
     pub fn stop(&mut self) {
         self.stopped = true;
-        unsafe { *DECODER = None };
+        unsafe { DECODER = None };
     }
 
     pub fn play_song(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
@@ -162,8 +167,9 @@ impl Player {
             }
         };
 
-        unsafe { PLAYBACK.reset_thread() };
-        unsafe { PLAYBACK.update_decoder(decoder) };
+        // unsafe { PLAYBACK.update_decoder(decoder) };
+
+        unsafe { DECODER = Some(decoder) };
 
         Ok(())
     }

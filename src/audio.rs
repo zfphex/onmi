@@ -145,6 +145,9 @@ impl WasapiOutput {
 
     pub fn run<F: FnMut(&mut [u8])>(&self, mut f: F) {
         unsafe {
+            //Allow for playback options to be changed.
+            PLAYBACK.reset_thread();
+
             let (period, _) = self.client.GetDevicePeriod().unwrap();
             let period = Duration::from_nanos(period as u64 * 100);
             let mut last_event = Instant::now();

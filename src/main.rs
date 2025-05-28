@@ -4,14 +4,15 @@ fn main() {
     mini::defer_results!();
 
     let mut player = Player::new();
-    player
-        .play_song(r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac")
-        .unwrap();
+    // player
+    //     .play_song(r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac")
+    //     .unwrap();
 
-    player.pause();
-    player.play();
-    player.seek(Duration::from_secs(200));
-    player.stop();
+    // player.pause();
+    // player.play();
+    // player.seek(std::time::Duration::from_secs(20));
+    // player.stop();
+
     player
         .play_song(r"D:\OneDrive\Music\kinoue64\日常消滅\01 被害者.flac")
         .unwrap();

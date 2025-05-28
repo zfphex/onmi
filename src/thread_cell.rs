@@ -32,7 +32,7 @@ impl<T> ThreadCell<T> {
     ///     }
     /// });
     /// ```
-    pub const unsafe fn reset(&mut self) {
+    pub const unsafe fn reset_thread(&mut self) {
         self.write_thread = None
     }
 }

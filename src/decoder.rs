@@ -17,6 +17,8 @@ use symphonia::{
     default::get_probe,
 };
 
+use crate::*;
+
 pub struct Symphonia {
     pub format_reader: Box<dyn FormatReader>,
     pub decoder: Box<dyn codecs::Decoder>,
@@ -51,6 +53,11 @@ impl Symphonia {
         let time_base = track.codec_params.time_base.unwrap();
         let decoder = symphonia::default::get_codecs()
             .make(&track.codec_params, &codecs::DecoderOptions::default())?;
+
+        unsafe {
+            let time = time_base.calc_time(duration);
+            DURATION = Some(Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac));
+        }
 
         Ok(Self {
             format_reader: probed.format,
@@ -96,7 +103,7 @@ impl Symphonia {
         );
     }
 
-    pub fn next_sample(&mut self) -> f32 {
+    pub fn next_sample(&mut self) -> Option<f32> {
         if self.buffer.is_none() {
             if let Some(packet) = self.next_packet() {
                 self.buffer = Some(packet);
@@ -107,7 +114,7 @@ impl Symphonia {
             if self.pos < buffer.samples().len() {
                 let sample = buffer.samples()[self.pos];
                 self.pos += 1;
-                return sample;
+                return Some(sample);
             } else {
                 self.pos = 0;
                 self.buffer = None;
@@ -115,7 +122,7 @@ impl Symphonia {
             }
         }
 
-        return 0.0;
+        return None;
     }
 
     pub fn next_packet(&mut self) -> Option<SampleBuffer<f32>> {
@@ -149,7 +156,9 @@ impl Symphonia {
 
         self.elapsed = next_packet.ts();
         let time = self.time_base.calc_time(self.elapsed);
-        unsafe { crate::ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac) };
+        unsafe {
+            crate::ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
+        };
 
         //HACK: Sometimes the end of file error does not indicate the end of the file?
         //The duration is a little bit longer than the maximum elapsed??

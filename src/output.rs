@@ -2,7 +2,7 @@ use crate::*;
 use std::time::{Duration, Instant};
 use wasapi::*;
 
-pub struct WasapiOutput {
+pub struct Output {
     pub client: IAudioClient,
     pub render: IAudioRenderClient,
     pub format: WAVEFORMATEXTENSIBLE,
@@ -10,7 +10,7 @@ pub struct WasapiOutput {
     pub event: *mut c_void,
 }
 
-impl WasapiOutput {
+impl Output {
     pub fn new(sample_rate: Option<u32>) -> Self {
         unsafe {
             CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap();
@@ -67,6 +67,16 @@ impl WasapiOutput {
         }
     }
 
+    pub fn default_device(&self) -> (String, IMMDevice) {
+        unsafe {
+            let device = self
+                .enumerator
+                .GetDefaultAudioEndpoint(DataFlow::Render, Role::Console)
+                .unwrap();
+            (device.name(), device)
+        }
+    }
+
     pub fn devices(&self) -> Vec<(String, IMMDevice)> {
         unsafe {
             let collection = self
@@ -111,6 +121,13 @@ impl WasapiOutput {
                 for c in 0..channels.max(2) {
                     if let Some(decoder) = DECODER.as_mut() {
                         let sample = decoder.next_sample();
+
+                        //TODO: Not sure how to actually check if the player is finished?
+                        if sample.is_none() {
+                            unsafe { STATE = State::Finished };
+                        }
+
+                        let sample = sample.unwrap_or_default();
                         let value = (sample * PLAYBACK.volume * PLAYBACK.gain).to_le_bytes();
                         bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
                     } else {

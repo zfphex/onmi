@@ -1,9 +1,14 @@
+use std::time::Duration;
+
 use onmi::*;
 
 fn main() {
     let mut player = Player::new();
     player
-        .play_song(r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac")
+        .play_song(
+            r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac",
+            true,
+        )
         .unwrap();
 
     // player.play();
@@ -16,6 +21,9 @@ fn main() {
 
     player.set_volume(2);
 
+    //TODO: Seeking past a certain point should set the player into the finished state.
+    player.seek(Duration::from_secs_f32(900.0));
+
     // println!("Volume: {}", player.volume());
     // player.seek_forward();
     // println!("{:#?}", player.duration());
@@ -24,6 +32,10 @@ fn main() {
     // player.stop();
     // player.pause();
     // player.pause();
+
+    loop {
+        dbg!(player.state());
+    }
 
     std::thread::park();
 }

@@ -1,11 +1,13 @@
 #![allow(unused, static_mut_refs)]
-pub mod audio;
 pub mod decoder;
+pub mod output;
 pub mod thread_cell;
 
-pub use audio::*;
 pub use decoder::*;
+pub use output::*;
 pub use thread_cell::*;
+
+pub use wasapi::IMMDevice;
 
 use std::path::Path;
 use std::time::Duration;
@@ -46,7 +48,7 @@ impl Song {
 }
 
 pub struct PlaybackThread {
-    pub output: Option<WasapiOutput>,
+    pub output: Option<Output>,
     pub volume: f32,
     pub gain: f32,
 }
@@ -67,18 +69,19 @@ static mut STATE: State = State::Stopped;
 static mut ELAPSED: Duration = Duration::new(0, 0);
 static mut DURATION: Option<Duration> = None;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum State {
     Playing,
     Paused,
     Stopped,
+    Finished,
 }
 
 pub struct Player {}
 
 impl Player {
     pub fn new() -> Self {
-        unsafe { PLAYBACK.output = Some(WasapiOutput::new(None)) };
+        unsafe { PLAYBACK.output = Some(Output::new(None)) };
         std::thread::spawn(move || {
             // eprintln!("PLAYBACK THREAD: {:?}", std::thread::current().id());
             unsafe { PLAYBACK.output.as_mut().unwrap().run() };
@@ -87,7 +90,11 @@ impl Player {
         Self {}
     }
 
-    pub fn elapsed(&mut self) -> Duration {
+    pub fn state(&self) -> State {
+        unsafe { STATE.clone() }
+    }
+
+    pub fn elapsed(&self) -> Duration {
         unsafe { ELAPSED }
     }
 
@@ -95,7 +102,7 @@ impl Player {
         unsafe { DURATION }
     }
 
-    pub fn toggle_playback(&mut self) {
+    pub fn toggle_playback(&self) {
         unsafe {
             if STATE == State::Paused {
                 STATE = State::Playing;
@@ -105,12 +112,12 @@ impl Player {
         }
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&self) {
         unsafe { STATE = State::Stopped };
         unsafe { DECODER = None };
     }
 
-    pub fn play_song(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
+    pub fn play_song(&self, path: impl AsRef<Path>, start: bool) -> Result<(), String> {
         let decoder = match Symphonia::new(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -121,36 +128,51 @@ impl Player {
             }
         };
 
-        unsafe { STATE = State::Playing };
+        if start {
+            unsafe { STATE = State::Playing };
+        } else {
+            unsafe { STATE = State::Paused };
+        }
+
         unsafe { DECODER = Some(decoder) };
 
         Ok(())
     }
 
-    pub fn play(&mut self) {
+    pub fn play(&self) {
         unsafe { STATE = State::Playing };
     }
 
-    pub fn pause(&mut self) {
+    pub fn pause(&self) {
         unsafe { STATE = State::Paused };
     }
 
-    pub fn set_volume(&mut self, volume: u8) {
+    pub fn set_volume(&self, volume: u8) {
         unsafe { PLAYBACK.volume = volume as f32 / VOLUME_REDUCTION }
     }
 
-    pub fn volume(&mut self) -> u8 {
+    pub fn volume_up(&self) {
+        self.set_volume((self.volume() + 5).clamp(0, 100))
+    }
+
+    pub fn volume_down(&self) {
+        dbg!(self.volume());
+        self.set_volume((self.volume() - 5).clamp(0, 100))
+    }
+
+    pub fn volume(&self) -> u8 {
         (unsafe { PLAYBACK.volume } * VOLUME_REDUCTION) as u8
     }
 
-    pub fn seek(&mut self, position: Duration) {
+    pub fn seek(&self, position: Duration) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
             // self.elapsed = position;
             decoder.seek(position.as_secs_f32());
         }
     }
 
-    pub fn seek_forward(&mut self) {
+    //TODO: Removeme
+    pub fn seek_forward(&self) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
             let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
             // self.elapsed = Duration::from_secs_f32(position);
@@ -158,11 +180,36 @@ impl Player {
         }
     }
 
-    pub fn seek_backward(&mut self) {
+    //TODO: Removeme
+    pub fn seek_backward(&self) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
             let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
             // self.elapsed = Duration::from_secs_f32(position);
             decoder.seek(position);
         }
+    }
+
+    pub fn devices(&self) -> Vec<(String, IMMDevice)> {
+        if let Some(output) = unsafe { PLAYBACK.output.as_mut() } {
+            output.devices()
+        } else {
+            Vec::new()
+        }
+    }
+    pub fn default_device(&self) -> Option<(String, IMMDevice)> {
+        if let Some(output) = unsafe { PLAYBACK.output.as_mut() } {
+            Some(output.default_device())
+        } else {
+            None
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        //TODO:
+        false
+    }
+
+    pub fn set_output_device(&self, device: &str) {
+        todo!()
     }
 }

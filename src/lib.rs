@@ -80,7 +80,7 @@ impl Player {
     pub fn new() -> Self {
         unsafe { PLAYBACK.output = Some(WasapiOutput::new(None)) };
         std::thread::spawn(move || {
-            eprintln!("PLAYBACK THREAD: {:?}", std::thread::current().id());
+            // eprintln!("PLAYBACK THREAD: {:?}", std::thread::current().id());
             unsafe { PLAYBACK.output.as_mut().unwrap().run() };
         });
 

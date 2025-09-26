@@ -8,19 +8,12 @@ pub struct WasapiOutput {
     pub format: WAVEFORMATEXTENSIBLE,
     pub enumerator: IMMDeviceEnumerator,
     pub event: *mut c_void,
-    pub playing: bool,
 }
 
 impl WasapiOutput {
-    pub fn new() -> Self {
-        //Use the default sample rate.
-        Self::new_with_sample_rate(None)
-    }
-
-    pub fn new_with_sample_rate(sample_rate: Option<u32>) -> Self {
+    pub fn new(sample_rate: Option<u32>) -> Self {
         unsafe {
             CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap();
-            // set_pro_audio_thread();
 
             let enumerator = IMMDeviceEnumerator::new().unwrap();
             let device = enumerator
@@ -70,7 +63,6 @@ impl WasapiOutput {
                 render,
                 format,
                 event,
-                playing: true,
             }
         }
     }
@@ -94,38 +86,15 @@ impl WasapiOutput {
     pub fn update_sample_rate(&mut self, sample_rate: u32) {
         if self.format.Format.nSamplesPerSec != sample_rate {
             unsafe { self.client.Stop().unwrap() };
-            *self = Self::new_with_sample_rate(Some(sample_rate));
+            *self = Self::new(Some(sample_rate));
         }
     }
 
-    #[inline]
-    pub const fn sample_rate(&self) -> u32 {
-        self.format.Format.nSamplesPerSec
-    }
-
-    #[inline]
-    pub const fn block_align(&self) -> u16 {
-        self.format.Format.nBlockAlign
-    }
-
-    #[inline]
-    pub const fn channels(&self) -> u16 {
-        self.format.Format.nChannels
-    }
-
-    pub const fn play(&mut self) {
-        self.playing = true;
-    }
-
-    pub const fn pause(&mut self) {
-        self.playing = false;
-    }
-
-    pub fn fill<F: FnMut(&mut [u8])>(&self, mut f: F) -> u32 {
+    pub fn fill_buffer(&self) -> u32 {
         unsafe {
             let padding = self.client.GetCurrentPadding().unwrap();
             let buffer_size = self.client.GetBufferSize().unwrap();
-            let block_align = self.block_align();
+            let block_align = self.format.Format.nBlockAlign;
             let frames = buffer_size - padding;
 
             if frames == 0 {
@@ -135,19 +104,29 @@ impl WasapiOutput {
             let size = (frames * block_align as u32) as usize;
             let ptr = self.render.GetBuffer(frames).unwrap();
             let buffer = std::slice::from_raw_parts_mut(ptr, size);
+            let channels = self.format.Format.nChannels as usize;
 
-            f(buffer);
+            for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
+                //Only allow for stereo outputs.
+                for c in 0..channels.max(2) {
+                    if let Some(decoder) = DECODER.as_mut() {
+                        let sample = decoder.next_sample();
+                        let value = (sample * PLAYBACK.volume * PLAYBACK.gain).to_le_bytes();
+                        bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
+                    } else {
+                        //If there is no decoder, just fill with zeroes.
+                        bytes[c * 4..c * 4 + 4].fill(0);
+                    }
+                }
+            }
 
             self.render.ReleaseBuffer(frames, 0).unwrap();
             return frames;
         }
     }
 
-    pub fn run<F: FnMut(&mut [u8])>(&self, mut f: F) {
+    pub fn run(&self) {
         unsafe {
-            //Allow for playback options to be changed.
-            PLAYBACK.reset_thread();
-
             let (period, _) = self.client.GetDevicePeriod().unwrap();
             let period = Duration::from_nanos(period as u64 * 100);
             let mut last_event = Instant::now();
@@ -168,11 +147,11 @@ impl WasapiOutput {
                 let mut frames = u32::MAX;
 
                 while frames != 0 {
-                    if self.playing {
-                        frames = self.fill(&mut f);
-                    } else {
-                        frames = 0;
+                    if STATE != State::Playing {
+                        break;
                     }
+
+                    frames = self.fill_buffer();
 
                     if i > 1 {
                         println!(

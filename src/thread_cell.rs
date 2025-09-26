@@ -3,7 +3,7 @@ use std::{
     thread::ThreadId,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ThreadCell<T> {
     data: T,
     write_thread: Option<ThreadId>,

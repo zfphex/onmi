@@ -46,7 +46,6 @@ impl Song {
 }
 
 pub struct PlaybackThread {
-    // pub decoder: Option<Symphonia>,
     pub output: Option<WasapiOutput>,
     pub volume: f32,
     pub gain: f32,
@@ -55,104 +54,59 @@ pub struct PlaybackThread {
 impl PlaybackThread {
     pub const fn new() -> Self {
         Self {
-            // decoder: None,
             output: None,
             volume: (15.0 / VOLUME_REDUCTION) * 0.5,
             gain: 0.5,
         }
     }
-    pub fn update_decoder(&mut self, symphonia: Symphonia) {
-        //TODO: Update gain.
-        // self.gain = symphonia
-        // unsafe { DECODER.reset_thread() };
-        unsafe { DECODER = Some(symphonia) };
-    }
 }
 
-//TODO: Will need to split up the playback thread into individual static mut's with ThreadCell.
-// static mut PLAYBACK: PlaybackThread = PlaybackThread::new();
-
-static mut PLAYBACK: ThreadCell<PlaybackThread> = ThreadCell::new(PlaybackThread::new());
-
-// static mut DECODER: ThreadCell<Option<Symphonia>> = ThreadCell::new(None);
+static mut PLAYBACK: PlaybackThread = PlaybackThread::new();
 static mut DECODER: Option<Symphonia> = None;
+static mut STATE: State = State::Stopped;
+static mut ELAPSED: Duration = Duration::new(0, 0);
+static mut DURATION: Option<Duration> = None;
 
-pub struct Player {
-    elapsed: Duration,
-    paused: bool,
-    stopped: bool,
+#[derive(PartialEq)]
+pub enum State {
+    Playing,
+    Paused,
+    Stopped,
 }
+
+pub struct Player {}
 
 impl Player {
     pub fn new() -> Self {
-        let f = std::thread::spawn(|| {
-            eprintln!("OUTPUT CREATION THREAD: {:?}", std::thread::current().id());
-            unsafe { PLAYBACK.output = Some(WasapiOutput::new()) };
-            let channels = unsafe { PLAYBACK.output.as_mut().unwrap().channels() } as usize;
-
-            move |buffer: &mut [u8]| {
-                for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
-                    //Only allow for stereo outputs.
-                    for c in 0..channels.max(2) {
-                        unsafe {
-                            if let Some(decoder) = DECODER.as_mut() {
-                                let sample = decoder.next_sample();
-                                let value =
-                                    (sample * PLAYBACK.volume * PLAYBACK.gain).to_le_bytes();
-                                bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
-                            }
-                        }
-                    }
-                }
-            }
-        })
-        .join()
-        .unwrap();
-
-        //Since the thread is joined this is fine.
-        unsafe { PLAYBACK.reset_thread() };
-
-        //Wait for the thread to finish so that immediate pauses will work.
-
-        //This thread runs in a loop forever filling the buffer with samples.
+        unsafe { PLAYBACK.output = Some(WasapiOutput::new(None)) };
         std::thread::spawn(move || {
             eprintln!("PLAYBACK THREAD: {:?}", std::thread::current().id());
-            unsafe { PLAYBACK.output.as_mut().unwrap().run(f) };
+            unsafe { PLAYBACK.output.as_mut().unwrap().run() };
         });
 
-        Self {
-            elapsed: Duration::new(0, 0),
-            paused: true,
-            stopped: false,
-        }
+        Self {}
     }
 
-    /// TODO: Fixme
-    /// This allows for the player to be slightly out of sync with the playback thread.
-    /// If the user askes to seek and then reads the elapsed time immediately after.
-    /// It will not be up to date, because seeking can take time to process.
     pub fn elapsed(&mut self) -> Duration {
-        let elapsed = self.elapsed;
-        if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            self.elapsed = decoder.elapsed();
-        }
-        return elapsed;
+        unsafe { ELAPSED }
     }
 
     pub fn duration(&self) -> Option<Duration> {
-        if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            return Some(decoder.duration());
-        }
-
-        None
+        unsafe { DURATION }
     }
 
     pub fn toggle_playback(&mut self) {
-        self.paused = !self.paused;
+        unsafe {
+            if STATE == State::Paused {
+                STATE = State::Playing;
+            } else if STATE == State::Playing {
+                STATE = State::Paused;
+            }
+        }
     }
 
     pub fn stop(&mut self) {
-        self.stopped = true;
+        unsafe { STATE = State::Stopped };
         unsafe { DECODER = None };
     }
 
@@ -167,27 +121,18 @@ impl Player {
             }
         };
 
-        // unsafe { PLAYBACK.update_decoder(decoder) };
-
+        unsafe { STATE = State::Playing };
         unsafe { DECODER = Some(decoder) };
 
         Ok(())
     }
 
     pub fn play(&mut self) {
-        self.paused = false;
-
-        if let Some(output) = unsafe { &mut PLAYBACK.output } {
-            output.play();
-        }
+        unsafe { STATE = State::Playing };
     }
 
     pub fn pause(&mut self) {
-        self.paused = true;
-
-        if let Some(output) = unsafe { &mut PLAYBACK.output } {
-            output.pause();
-        }
+        unsafe { STATE = State::Paused };
     }
 
     pub fn set_volume(&mut self, volume: u8) {
@@ -200,7 +145,7 @@ impl Player {
 
     pub fn seek(&mut self, position: Duration) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            self.elapsed = position;
+            // self.elapsed = position;
             decoder.seek(position.as_secs_f32());
         }
     }
@@ -208,7 +153,7 @@ impl Player {
     pub fn seek_forward(&mut self) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
             let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
-            self.elapsed = Duration::from_secs_f32(position);
+            // self.elapsed = Duration::from_secs_f32(position);
             decoder.seek(position);
         }
     }
@@ -216,7 +161,7 @@ impl Player {
     pub fn seek_backward(&mut self) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
             let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
-            self.elapsed = Duration::from_secs_f32(position);
+            // self.elapsed = Duration::from_secs_f32(position);
             decoder.seek(position);
         }
     }

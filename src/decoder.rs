@@ -149,6 +149,8 @@ impl Symphonia {
         };
 
         self.elapsed = next_packet.ts();
+        let time = self.time_base.calc_time(self.elapsed);
+        unsafe { crate::ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac) };
 
         //HACK: Sometimes the end of file error does not indicate the end of the file?
         //The duration is a little bit longer than the maximum elapsed??
@@ -166,7 +168,6 @@ impl Symphonia {
                 Some(buffer)
             }
             Err(_) => {
-                // gonk_core::log!("{}", err);
                 self.error_count += 1;
                 self.next_packet()
             }

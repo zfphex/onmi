@@ -1,0 +1,9 @@
+- Player
+  - User facing API
+  - Allows for an easy way to play audio
+- Symphonia
+  - Decoder
+  - Turns audio files into audio packetes
+- WasapiOutput
+  - Sends packets to windows to be played
+  - Lists output devices

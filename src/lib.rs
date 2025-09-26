@@ -22,31 +22,6 @@ pub const COMMON_SAMPLE_RATES: [u32; 13] = [
     5512, 8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000,
 ];
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Song {
-    pub title: String,
-    pub album: String,
-    pub artist: String,
-    pub disc_number: u8,
-    pub track_number: u8,
-    pub path: String,
-    pub gain: f32,
-}
-
-impl Song {
-    pub fn new() -> Self {
-        Self {
-            title: UNKNOWN_TITLE.to_string(),
-            album: UNKNOWN_ALBUM.to_string(),
-            artist: UNKNOWN_ARTIST.to_string(),
-            disc_number: 1,
-            track_number: 1,
-            path: String::new(),
-            gain: 0.0,
-        }
-    }
-}
-
 pub struct PlaybackThread {
     pub output: Option<Output>,
     pub volume: f32,

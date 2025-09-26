@@ -1,9 +1,8 @@
 use std::time::Duration;
-
 use onmi::*;
 
 fn main() {
-    let mut player = Player::new();
+    let player = Player::new();
     player
         .play_song(
             r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac",

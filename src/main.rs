@@ -1,8 +1,6 @@
 use onmi::*;
 
 fn main() {
-    mini::defer_results!();
-
     let mut player = Player::new();
     player
         .play_song(r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac")

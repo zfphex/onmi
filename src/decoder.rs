@@ -119,7 +119,6 @@ impl Symphonia {
     }
 
     pub fn next_packet(&mut self) -> Option<SampleBuffer<f32>> {
-        mini::profile!();
         if self.error_count > 2 || self.done {
             return None;
         }

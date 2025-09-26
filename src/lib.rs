@@ -9,6 +9,7 @@ pub use thread_cell::*;
 
 pub use wasapi::IMMDevice;
 
+use std::marker::PhantomData;
 use std::path::Path;
 use std::time::Duration;
 
@@ -44,7 +45,11 @@ pub enum State {
     Stopped,
 }
 
-pub struct Player {}
+pub struct Player {
+    //Force !Send + !Sync
+    //User's should not access the player from multiple threads.
+    _phantom: PhantomData<*const ()>,
+}
 
 impl Player {
     pub fn new() -> Self {
@@ -54,7 +59,9 @@ impl Player {
             unsafe { OUTPUT.as_mut().unwrap().run() };
         });
 
-        Self {}
+        Self {
+            _phantom: PhantomData,
+        }
     }
 
     pub fn state(&self) -> State {

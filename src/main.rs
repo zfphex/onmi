@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::time::Duration;
 use onmi::*;
 
@@ -21,7 +22,7 @@ fn main() {
     player.set_volume(2);
 
     //TODO: Seeking past a certain point should set the player into the finished state.
-    player.seek(Duration::from_secs_f32(900.0));
+    // player.seek(Duration::from_secs_f32(900.0));
 
     // println!("Volume: {}", player.volume());
     // player.seek_forward();
@@ -32,9 +33,9 @@ fn main() {
     // player.pause();
     // player.pause();
 
-    loop {
-        dbg!(player.state());
-    }
+    // loop {
+    //     dbg!(player.state());
+    // }
 
     std::thread::park();
 }

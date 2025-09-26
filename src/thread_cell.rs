@@ -16,25 +16,6 @@ impl<T> ThreadCell<T> {
             write_thread: None,
         }
     }
-
-    /// Reset the write thread id.
-    /// Allows for multiple threads write data, under user defined conditions.
-    /// ```
-    /// std::thread::spawn(|| {
-    ///     //Write some data.
-    /// }).join().unwrap();
-    ///
-    /// //data.reset()
-    ///
-    /// std::thread::spawn(|| {
-    ///     loop {
-    ///         //Write some more data.
-    ///     }
-    /// });
-    /// ```
-    pub const unsafe fn reset_thread(&mut self) {
-        self.write_thread = None
-    }
 }
 
 impl<T> Deref for ThreadCell<T> {

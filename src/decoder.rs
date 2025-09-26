@@ -56,7 +56,7 @@ impl Symphonia {
 
         unsafe {
             let time = time_base.calc_time(duration);
-            DURATION = Some(Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac));
+            *DURATION = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac);
         }
 
         Ok(Self {
@@ -157,7 +157,7 @@ impl Symphonia {
         self.elapsed = next_packet.ts();
         let time = self.time_base.calc_time(self.elapsed);
         unsafe {
-            crate::ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
+            *crate::ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
         };
 
         //HACK: Sometimes the end of file error does not indicate the end of the file?

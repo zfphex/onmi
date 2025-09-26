@@ -22,74 +22,68 @@ pub const COMMON_SAMPLE_RATES: [u32; 13] = [
     5512, 8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000,
 ];
 
-pub struct PlaybackThread {
-    pub output: Option<Output>,
-    pub volume: f32,
-    pub gain: f32,
-}
-
-impl PlaybackThread {
-    pub const fn new() -> Self {
-        Self {
-            output: None,
-            volume: (15.0 / VOLUME_REDUCTION) * 0.5,
-            gain: 0.5,
-        }
-    }
-}
-
-static mut PLAYBACK: PlaybackThread = PlaybackThread::new();
+//TODO: Seeking can cause race conditions. I think it's fine...?
 static mut DECODER: Option<Symphonia> = None;
-static mut STATE: State = State::Stopped;
-static mut ELAPSED: Duration = Duration::new(0, 0);
-static mut DURATION: Option<Duration> = None;
+
+//Safety: The output device needs to be initalised before creating the output thread.
+//OUTPUT is only read once on creation.
+static mut OUTPUT: Option<Output> = None;
+
+static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) * 0.5);
+//TODO: Gain is never updated.
+static mut GAIN: ThreadCell<f32> = ThreadCell::new(0.5);
+static mut DURATION: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
+static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);
+static mut ELAPSED: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
+static mut FINSIHED: ThreadCell<bool> = ThreadCell::new(false);
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum State {
     Playing,
     Paused,
     Stopped,
-    Finished,
 }
 
 pub struct Player {}
 
 impl Player {
     pub fn new() -> Self {
-        unsafe { PLAYBACK.output = Some(Output::new(None)) };
+        unsafe { OUTPUT = Some(Output::new(None)) };
         std::thread::spawn(move || {
             // eprintln!("PLAYBACK THREAD: {:?}", std::thread::current().id());
-            unsafe { PLAYBACK.output.as_mut().unwrap().run() };
+            unsafe { OUTPUT.as_mut().unwrap().run() };
         });
 
         Self {}
     }
 
     pub fn state(&self) -> State {
-        unsafe { STATE.clone() }
+        unsafe { (*STATE).clone() }
     }
 
     pub fn elapsed(&self) -> Duration {
-        unsafe { ELAPSED }
+        unsafe { *ELAPSED }
     }
 
-    pub fn duration(&self) -> Option<Duration> {
-        unsafe { DURATION }
+    pub fn duration(&self) -> Duration {
+        unsafe { *DURATION }
     }
 
     pub fn toggle_playback(&self) {
         unsafe {
-            if STATE == State::Paused {
-                STATE = State::Playing;
-            } else if STATE == State::Playing {
-                STATE = State::Paused;
+            if *STATE == State::Paused {
+                *STATE = State::Playing;
+            } else if *STATE == State::Playing {
+                *STATE = State::Paused;
             }
         }
     }
 
     pub fn stop(&self) {
-        unsafe { STATE = State::Stopped };
-        unsafe { DECODER = None };
+        unsafe { *STATE = State::Stopped };
+
+        //This could cause UB.
+        // unsafe { DECODER = None };
     }
 
     pub fn play_song(&self, path: impl AsRef<Path>, start: bool) -> Result<(), String> {
@@ -104,9 +98,9 @@ impl Player {
         };
 
         if start {
-            unsafe { STATE = State::Playing };
+            unsafe { *STATE = State::Playing };
         } else {
-            unsafe { STATE = State::Paused };
+            unsafe { *STATE = State::Paused };
         }
 
         unsafe { DECODER = Some(decoder) };
@@ -115,15 +109,16 @@ impl Player {
     }
 
     pub fn play(&self) {
-        unsafe { STATE = State::Playing };
+        unsafe { *STATE = State::Playing };
     }
 
     pub fn pause(&self) {
-        unsafe { STATE = State::Paused };
+        unsafe { *STATE = State::Paused };
     }
 
     pub fn set_volume(&self, volume: u8) {
-        unsafe { PLAYBACK.volume = volume as f32 / VOLUME_REDUCTION }
+        unsafe { *VOLUME = volume as f32 / VOLUME_REDUCTION }
+        // unsafe { PLAYBACK.volume = volume as f32 / VOLUME_REDUCTION }
     }
 
     pub fn volume_up(&self) {
@@ -136,7 +131,7 @@ impl Player {
     }
 
     pub fn volume(&self) -> u8 {
-        (unsafe { PLAYBACK.volume } * VOLUME_REDUCTION) as u8
+        (unsafe { *VOLUME } * VOLUME_REDUCTION) as u8
     }
 
     pub fn seek(&self, position: Duration) {
@@ -165,14 +160,14 @@ impl Player {
     }
 
     pub fn devices(&self) -> Vec<(String, IMMDevice)> {
-        if let Some(output) = unsafe { PLAYBACK.output.as_mut() } {
+        if let Some(output) = unsafe { OUTPUT.as_ref() } {
             output.devices()
         } else {
             Vec::new()
         }
     }
     pub fn default_device(&self) -> Option<(String, IMMDevice)> {
-        if let Some(output) = unsafe { PLAYBACK.output.as_mut() } {
+        if let Some(output) = unsafe { OUTPUT.as_ref() } {
             Some(output.default_device())
         } else {
             None
@@ -180,8 +175,7 @@ impl Player {
     }
 
     pub fn is_finished(&self) -> bool {
-        //TODO:
-        false
+        unsafe { *FINSIHED }
     }
 
     pub fn set_output_device(&self, device: &str) {

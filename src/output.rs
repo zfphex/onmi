@@ -116,6 +116,11 @@ impl Output {
             let buffer = std::slice::from_raw_parts_mut(ptr, size);
             let channels = self.format.Format.nChannels as usize;
 
+            //Don't abruptly change the volume/gain when filling packets.
+            //I don't know how much overhead a threadcell creates. Maybe it's fine?
+            let volume = *VOLUME;
+            let gain = *GAIN;
+
             for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
                 //Only allow for stereo outputs.
                 for c in 0..channels.max(2) {
@@ -124,11 +129,11 @@ impl Output {
 
                         //TODO: Not sure how to actually check if the player is finished?
                         if sample.is_none() {
-                            unsafe { STATE = State::Finished };
+                            unsafe { *FINSIHED = true };
                         }
 
                         let sample = sample.unwrap_or_default();
-                        let value = (sample * PLAYBACK.volume * PLAYBACK.gain).to_le_bytes();
+                        let value = (sample * volume * gain).to_le_bytes();
                         bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
                     } else {
                         //If there is no decoder, just fill with zeroes.
@@ -164,7 +169,7 @@ impl Output {
                 let mut frames = u32::MAX;
 
                 while frames != 0 {
-                    if STATE != State::Playing {
+                    if *STATE != State::Playing {
                         break;
                     }
 

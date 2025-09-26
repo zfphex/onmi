@@ -19,7 +19,7 @@ symphonia = { git = "https://github.com/pdeljanov/Symphonia", default-features =
     "opt-simd",
 ] }
 # wasapi = { version = "0.1.0", path = "../wasapi" }
-wasapi = { git = "https://github.com/zx3no/wasapi", version = "0.1.0" }
+wasapi = { git = "https://github.com/zfphex/wasapi", version = "0.1.0" }
 
 # crossbeam-queue = "0.3.12"
 # mini = { version = "0.1.0", path = "../mini"}

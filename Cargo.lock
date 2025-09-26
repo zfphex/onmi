@@ -221,7 +221,7 @@ dependencies = [
 [[package]]
 name = "wasapi"
 version = "0.1.0"
-source = "git+https://github.com/zx3no/wasapi#09cc174dc98c0160b1bfa162dabdc7e59aa2815e"
+source = "git+https://github.com/zfphex/wasapi#09cc174dc98c0160b1bfa162dabdc7e59aa2815e"
 
 [[package]]
 name = "winwalk"

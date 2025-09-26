@@ -126,7 +126,6 @@ impl Player {
     }
 
     pub fn volume_down(&self) {
-        dbg!(self.volume());
         self.set_volume((self.volume() - 5).clamp(0, 100))
     }
 

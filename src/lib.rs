@@ -11,6 +11,7 @@ pub use wasapi::IMMDevice;
 
 use std::marker::PhantomData;
 use std::path::Path;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 //Scale the volume (0 - 100) down to something more reasonable to listen to.
@@ -48,7 +49,9 @@ pub enum State {
 pub struct Player {
     //Force !Send + !Sync
     //User's should not access the player from multiple threads.
-    _phantom: PhantomData<*const ()>,
+    //TODO: Actually I want to defer creation of the player onto a new thread since it's really slow...
+    //I feel like the language doesn't allow me to prevent misuse here 🤔.
+    // _phantom: PhantomData<*const ()>,
 }
 
 impl Player {
@@ -60,7 +63,7 @@ impl Player {
         });
 
         Self {
-            _phantom: PhantomData,
+            // _phantom: PhantomData,
         }
     }
 
@@ -165,26 +168,27 @@ impl Player {
         }
     }
 
-    pub fn devices(&self) -> Vec<(String, IMMDevice)> {
-        if let Some(output) = unsafe { OUTPUT.as_ref() } {
-            output.devices()
-        } else {
-            Vec::new()
-        }
-    }
-    pub fn default_device(&self) -> Option<(String, IMMDevice)> {
-        if let Some(output) = unsafe { OUTPUT.as_ref() } {
-            Some(output.default_device())
-        } else {
-            None
-        }
-    }
-
     pub fn is_finished(&self) -> bool {
         unsafe { *FINSIHED }
     }
 
     pub fn set_output_device(&self, device: &str) {
         todo!()
+    }
+}
+
+pub fn devices() -> Vec<(String, IMMDevice)> {
+    if let Some(output) = unsafe { OUTPUT.as_ref() } {
+        output.devices()
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn default_device() -> Option<(String, IMMDevice)> {
+    if let Some(output) = unsafe { OUTPUT.as_ref() } {
+        Some(output.default_device())
+    } else {
+        None
     }
 }

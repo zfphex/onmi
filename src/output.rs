@@ -155,7 +155,7 @@ impl Output {
 
                         //TODO: Not sure how to actually check if the player is finished?
                         if sample.is_none() {
-                            unsafe { *FINSIHED = true };
+                            unsafe { FINSIHED = true };
                         }
 
                         let sample = sample.unwrap_or_default();

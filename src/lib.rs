@@ -36,7 +36,9 @@ static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) *
 static mut GAIN: ThreadCell<f32> = ThreadCell::new(0.5);
 static mut DURATION: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
 static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);
-static mut FINSIHED: ThreadCell<bool> = ThreadCell::new(false);
+
+//Could be atomic, needs to be written across multiple threads.
+static mut FINSIHED: bool = false;
 
 //TODO: Seeking is causing a lot of issues and should be reworked.
 //Can cause race conditions while the decoder thread readsl packets and the user tries to seek.
@@ -120,6 +122,10 @@ impl Player {
             }
         };
 
+        //Tell the output thread that a new song has started.
+        //Do not remove this.
+        unsafe { FINSIHED = false };
+
         if start {
             unsafe { *STATE = State::Playing };
         } else {
@@ -182,7 +188,7 @@ impl Player {
     }
 
     pub fn is_finished(&self) -> bool {
-        unsafe { *FINSIHED }
+        unsafe { FINSIHED }
     }
 
     pub fn set_output_device(&self, device: &str) {

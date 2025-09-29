@@ -27,7 +27,6 @@ pub struct Symphonia {
     pub done: bool,
     pub buffer: Option<SampleBuffer<f32>>,
     pub pos: usize,
-    elapsed: u64,
     duration: u64,
     time_base: TimeBase,
 }
@@ -64,23 +63,12 @@ impl Symphonia {
             decoder,
             track,
             duration,
-            elapsed: 0,
             error_count: 0,
             done: false,
             buffer: None,
             pos: 0,
             time_base,
         })
-    }
-
-    pub fn elapsed(&self) -> Duration {
-        let time = self.time_base.calc_time(self.elapsed);
-        Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
-    }
-
-    pub fn duration(&self) -> Duration {
-        let time = self.time_base.calc_time(self.duration);
-        Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -101,6 +89,8 @@ impl Symphonia {
                 track_id: None,
             },
         );
+
+        unsafe { ELAPSED = pos };
     }
 
     pub fn next_sample(&mut self) -> Option<f32> {
@@ -138,7 +128,7 @@ impl Symphonia {
             Err(err) => match err {
                 Error::IoError(e) if e.kind() == ErrorKind::UnexpectedEof => {
                     //Just in case my 250ms addition is not enough.
-                    if self.elapsed() + Duration::from_secs(1) > self.duration() {
+                    if unsafe { ELAPSED } + Duration::from_secs(1) > unsafe { *DURATION } {
                         self.done = true;
                         return None;
                     } else {
@@ -154,16 +144,14 @@ impl Symphonia {
             },
         };
 
-        self.elapsed = next_packet.ts();
-        let time = self.time_base.calc_time(self.elapsed);
-        unsafe {
-            *crate::ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac)
-        };
+        let elapsed = next_packet.ts();
+        let time = self.time_base.calc_time(elapsed);
+        unsafe { ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac) };
 
         //HACK: Sometimes the end of file error does not indicate the end of the file?
         //The duration is a little bit longer than the maximum elapsed??
         //The final packet will make the elapsed time move backwards???
-        if self.elapsed() + Duration::from_millis(250) > self.duration() {
+        if unsafe { ELAPSED } + Duration::from_millis(250) > unsafe { *DURATION } {
             self.done = true;
             return None;
         }

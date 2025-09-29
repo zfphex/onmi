@@ -1,9 +1,11 @@
 #![allow(unused)]
-use std::time::Duration;
 use onmi::*;
+use std::time::Duration;
 
 fn main() {
-    let player = Player::new();
+    let outputs = OutputDevices::new();
+    let device = outputs.default_device();
+    let player = Player::new(device);
     player
         .play_song(
             r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac",

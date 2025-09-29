@@ -86,7 +86,6 @@ version = "0.1.0"
 dependencies = [
  "symphonia",
  "wasapi",
- "winwalk",
 ]
 
 [[package]]
@@ -121,7 +120,7 @@ checksum = "fe895eb47f22e2ddd4dabc02bce419d2e643c8e3b585c78158b349195bc24d82"
 [[package]]
 name = "symphonia"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia#46b59dc35b677406fada42fd6390971ebc8ae40c"
+source = "git+https://github.com/pdeljanov/Symphonia#505458eb1e479d84df0a65f95ab3d536d6350d29"
 dependencies = [
  "lazy_static",
  "symphonia-bundle-flac",
@@ -135,7 +134,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-flac"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia#46b59dc35b677406fada42fd6390971ebc8ae40c"
+source = "git+https://github.com/pdeljanov/Symphonia#505458eb1e479d84df0a65f95ab3d536d6350d29"
 dependencies = [
  "log",
  "symphonia-core",
@@ -146,7 +145,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-mp3"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia#46b59dc35b677406fada42fd6390971ebc8ae40c"
+source = "git+https://github.com/pdeljanov/Symphonia#505458eb1e479d84df0a65f95ab3d536d6350d29"
 dependencies = [
  "lazy_static",
  "log",
@@ -157,7 +156,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-vorbis"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia#46b59dc35b677406fada42fd6390971ebc8ae40c"
+source = "git+https://github.com/pdeljanov/Symphonia#505458eb1e479d84df0a65f95ab3d536d6350d29"
 dependencies = [
  "log",
  "symphonia-core",
@@ -167,7 +166,7 @@ dependencies = [
 [[package]]
 name = "symphonia-core"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia#46b59dc35b677406fada42fd6390971ebc8ae40c"
+source = "git+https://github.com/pdeljanov/Symphonia#505458eb1e479d84df0a65f95ab3d536d6350d29"
 dependencies = [
  "arrayvec",
  "bitflags",
@@ -180,7 +179,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-ogg"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia#46b59dc35b677406fada42fd6390971ebc8ae40c"
+source = "git+https://github.com/pdeljanov/Symphonia#505458eb1e479d84df0a65f95ab3d536d6350d29"
 dependencies = [
  "log",
  "symphonia-core",
@@ -191,7 +190,7 @@ dependencies = [
 [[package]]
 name = "symphonia-metadata"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia#46b59dc35b677406fada42fd6390971ebc8ae40c"
+source = "git+https://github.com/pdeljanov/Symphonia#505458eb1e479d84df0a65f95ab3d536d6350d29"
 dependencies = [
  "encoding_rs",
  "lazy_static",
@@ -202,7 +201,7 @@ dependencies = [
 [[package]]
 name = "symphonia-utils-xiph"
 version = "0.5.4"
-source = "git+https://github.com/pdeljanov/Symphonia#46b59dc35b677406fada42fd6390971ebc8ae40c"
+source = "git+https://github.com/pdeljanov/Symphonia#505458eb1e479d84df0a65f95ab3d536d6350d29"
 dependencies = [
  "symphonia-core",
  "symphonia-metadata",
@@ -221,10 +220,4 @@ dependencies = [
 [[package]]
 name = "wasapi"
 version = "0.1.0"
-source = "git+https://github.com/zfphex/wasapi#09cc174dc98c0160b1bfa162dabdc7e59aa2815e"
-
-[[package]]
-name = "winwalk"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7be02f8d6df9807ac05b5766ab9ea63f54db3f40bbf45cc9346103429ac6a26c"
+source = "git+https://github.com/zfphex/wasapi#fb5cf5b5b16f2eec296e84d8dbf86dda62b7f3f4"

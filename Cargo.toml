@@ -10,7 +10,7 @@ edition = "2024"
 # error = ["mini/error"]
 
 [dependencies]
-winwalk = "0.2.2"
+# winwalk = "0.2.2"
 symphonia = { git = "https://github.com/pdeljanov/Symphonia", default-features = false, features = [
     "flac",
     "mp3",

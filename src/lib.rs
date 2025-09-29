@@ -36,8 +36,12 @@ static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) *
 static mut GAIN: ThreadCell<f32> = ThreadCell::new(0.5);
 static mut DURATION: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
 static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);
-static mut ELAPSED: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
 static mut FINSIHED: ThreadCell<bool> = ThreadCell::new(false);
+
+//TODO: Seeking is causing a lot of issues and should be reworked.
+//Can cause race conditions while the decoder thread readsl packets and the user tries to seek.
+// static mut ELAPSED: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
+static mut ELAPSED: Duration = Duration::new(0, 0);
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum State {
@@ -45,6 +49,15 @@ pub enum State {
     Paused,
     Stopped,
 }
+
+#[derive(Debug, Clone)]
+pub struct Device {
+    pub imm: IMMDevice,
+    pub name: String,
+}
+
+unsafe impl Send for Device {}
+unsafe impl Sync for Device {}
 
 pub struct Player {
     //Force !Send + !Sync
@@ -55,16 +68,16 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new() -> Self {
-        unsafe { OUTPUT = Some(Output::new(None)) };
+    pub fn new(device: Device) -> Self {
         std::thread::spawn(move || {
-            // eprintln!("PLAYBACK THREAD: {:?}", std::thread::current().id());
-            unsafe { OUTPUT.as_mut().unwrap().run() };
+            unsafe {
+                // OUTPUT = Some(Output::new(device, None));
+                // OUTPUT.as_mut().unwrap().run();
+                Output::new(device, None).run();
+            }
         });
 
-        Self {
-            // _phantom: PhantomData,
-        }
+        Self {}
     }
 
     pub fn state(&self) -> State {
@@ -72,7 +85,7 @@ impl Player {
     }
 
     pub fn elapsed(&self) -> Duration {
-        unsafe { *ELAPSED }
+        unsafe { ELAPSED }
     }
 
     pub fn duration(&self) -> Duration {
@@ -153,7 +166,7 @@ impl Player {
     //TODO: Removeme
     pub fn seek_forward(&self) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            let position = (decoder.elapsed().as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
+            let position = (unsafe { ELAPSED }.as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
             // self.elapsed = Duration::from_secs_f32(position);
             decoder.seek(position);
         }
@@ -162,7 +175,7 @@ impl Player {
     //TODO: Removeme
     pub fn seek_backward(&self) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            let position = (decoder.elapsed().as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
+            let position = (unsafe { ELAPSED }.as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
             // self.elapsed = Duration::from_secs_f32(position);
             decoder.seek(position);
         }
@@ -174,21 +187,5 @@ impl Player {
 
     pub fn set_output_device(&self, device: &str) {
         todo!()
-    }
-}
-
-pub fn devices() -> Vec<(String, IMMDevice)> {
-    if let Some(output) = unsafe { OUTPUT.as_ref() } {
-        output.devices()
-    } else {
-        Vec::new()
-    }
-}
-
-pub fn default_device() -> Option<(String, IMMDevice)> {
-    if let Some(output) = unsafe { OUTPUT.as_ref() } {
-        Some(output.default_device())
-    } else {
-        None
     }
 }

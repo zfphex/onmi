@@ -1,26 +1,78 @@
 use crate::*;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Once,
+    time::{Duration, Instant},
+};
 use wasapi::*;
+
+//Initialise the COM library.
+static mut ONCE: Once = Once::new();
+
+pub struct OutputDevices {
+    pub enumerator: IMMDeviceEnumerator,
+}
+
+impl OutputDevices {
+    pub fn new() -> Self {
+        unsafe { ONCE.call_once(|| CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap()) };
+
+        Self {
+            enumerator: IMMDeviceEnumerator::new().unwrap(),
+        }
+    }
+
+    pub fn default_device(&self) -> Device {
+        unsafe {
+            let imm = self
+                .enumerator
+                .GetDefaultAudioEndpoint(DataFlow::Render, Role::Console)
+                .unwrap();
+
+            Device {
+                name: imm.name(),
+                imm,
+            }
+        }
+    }
+
+    pub fn devices(&self) -> Vec<Device> {
+        unsafe {
+            let collection = self
+                .enumerator
+                .EnumAudioEndpoints(DataFlow::Render, DeviceState::Active)
+                .unwrap();
+
+            (0..collection.GetCount().unwrap())
+                .map(|i| {
+                    let imm = collection.Item(i).unwrap();
+                    Device {
+                        name: imm.name(),
+                        imm,
+                    }
+                })
+                .collect()
+        }
+    }
+
+    pub fn find(&self, device: &str) -> Device {
+        todo!()
+    }
+}
 
 pub struct Output {
     pub client: IAudioClient,
     pub render: IAudioRenderClient,
     pub format: WAVEFORMATEXTENSIBLE,
-    pub enumerator: IMMDeviceEnumerator,
     pub event: *mut c_void,
+    pub device: Device,
 }
 
 impl Output {
-    pub fn new(sample_rate: Option<u32>) -> Self {
+    pub fn new(device: Device, sample_rate: Option<u32>) -> Self {
         unsafe {
-            CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap();
+            ONCE.call_once(|| CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap());
 
-            let enumerator = IMMDeviceEnumerator::new().unwrap();
-            let device = enumerator
-                .GetDefaultAudioEndpoint(DataFlow::Render, Role::Console)
-                .unwrap();
-
-            let client: IAudioClient = device.Activate(ExecutionContext::All).unwrap();
+            let client: IAudioClient = device.imm.Activate(ExecutionContext::All).unwrap();
             let mut format =
                 (client.GetMixFormat().unwrap() as *const _ as *const WAVEFORMATEXTENSIBLE).read();
 
@@ -58,45 +110,19 @@ impl Output {
             client.Start().unwrap();
 
             Self {
-                enumerator,
                 client,
                 render,
                 format,
                 event,
+                device,
             }
-        }
-    }
-
-    pub fn default_device(&self) -> (String, IMMDevice) {
-        unsafe {
-            let device = self
-                .enumerator
-                .GetDefaultAudioEndpoint(DataFlow::Render, Role::Console)
-                .unwrap();
-            (device.name(), device)
-        }
-    }
-
-    pub fn devices(&self) -> Vec<(String, IMMDevice)> {
-        unsafe {
-            let collection = self
-                .enumerator
-                .EnumAudioEndpoints(DataFlow::Render, DeviceState::Active)
-                .unwrap();
-
-            (0..collection.GetCount().unwrap())
-                .map(|i| {
-                    let device = collection.Item(i).unwrap();
-                    (device.name(), device)
-                })
-                .collect()
         }
     }
 
     pub fn update_sample_rate(&mut self, sample_rate: u32) {
         if self.format.Format.nSamplesPerSec != sample_rate {
             unsafe { self.client.Stop().unwrap() };
-            *self = Self::new(Some(sample_rate));
+            *self = Self::new(self.device.clone(), Some(sample_rate));
         }
     }
 

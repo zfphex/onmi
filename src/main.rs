@@ -9,6 +9,7 @@ fn main() {
     player
         .play_song(
             r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac",
+            None,
             true,
         )
         .unwrap();

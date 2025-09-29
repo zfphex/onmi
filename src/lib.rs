@@ -111,7 +111,14 @@ impl Player {
         // unsafe { DECODER = None };
     }
 
-    pub fn play_song(&self, path: impl AsRef<Path>, start: bool) -> Result<(), String> {
+    pub fn play_song(
+        &self,
+        path: impl AsRef<Path>,
+        //Set how the volume should be scaled.
+        replay_gain: Option<f32>,
+        //Can start the player paused.
+        start_playback: bool,
+    ) -> Result<(), String> {
         let decoder = match Symphonia::new(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -126,12 +133,15 @@ impl Player {
         //Do not remove this.
         unsafe { FINSIHED = false };
 
-        if start {
+        if start_playback {
             unsafe { *STATE = State::Playing };
         } else {
             unsafe { *STATE = State::Paused };
         }
 
+        //Default to half volume, not sure if this is a good deafult.
+        //Some songs don't have replay gain values and this reduces the volume jump between songs.
+        unsafe { *GAIN = replay_gain.unwrap_or(0.5) }
         unsafe { DECODER = Some(decoder) };
 
         Ok(())

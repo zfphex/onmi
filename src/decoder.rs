@@ -79,7 +79,7 @@ impl Symphonia {
         let pos = Duration::from_secs_f32(pos);
 
         //TODO: This is pretty scuffed and might break under certain conditions.
-        if unsafe { pos + ELAPSED > *DURATION } {
+        if unsafe { pos > *DURATION } {
             self.finished = true;
             return;
         }

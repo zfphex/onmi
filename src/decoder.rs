@@ -24,7 +24,7 @@ pub struct Symphonia {
     pub decoder: Box<dyn codecs::Decoder>,
     pub track: Track,
     pub error_count: u8,
-    pub done: bool,
+    pub finished: bool,
     pub buffer: Option<SampleBuffer<f32>>,
     pub pos: usize,
     duration: u64,
@@ -64,7 +64,7 @@ impl Symphonia {
             track,
             duration,
             error_count: 0,
-            done: false,
+            finished: false,
             buffer: None,
             pos: 0,
             time_base,
@@ -75,11 +75,14 @@ impl Symphonia {
         self.track.codec_params.sample_rate.unwrap()
     }
 
-    //TODO: I would like seeking out of bounds to play the next song.
-    //I can't trust symphonia to provide accurate errors so it's not worth the hassle.
-    //I could use pos + elapsed > duration but the duration isn't accurate.
     pub fn seek(&mut self, pos: f32) {
         let pos = Duration::from_secs_f32(pos);
+
+        //TODO: This is pretty scuffed and might break under certain conditions.
+        if unsafe { pos + ELAPSED > *DURATION } {
+            self.finished = true;
+            return;
+        }
 
         //Ignore errors.
         let _ = self.format_reader.seek(
@@ -116,7 +119,7 @@ impl Symphonia {
     }
 
     pub fn next_packet(&mut self) -> Option<SampleBuffer<f32>> {
-        if self.error_count > 2 || self.done {
+        if self.error_count > 2 || self.finished {
             return None;
         }
 
@@ -129,7 +132,7 @@ impl Symphonia {
                 Error::IoError(e) if e.kind() == ErrorKind::UnexpectedEof => {
                     //Just in case my 250ms addition is not enough.
                     if unsafe { ELAPSED } + Duration::from_secs(1) > unsafe { *DURATION } {
-                        self.done = true;
+                        self.finished = true;
                         return None;
                     } else {
                         self.error_count += 1;
@@ -148,11 +151,8 @@ impl Symphonia {
         let time = self.time_base.calc_time(elapsed);
         unsafe { ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac) };
 
-        //HACK: Sometimes the end of file error does not indicate the end of the file?
-        //The duration is a little bit longer than the maximum elapsed??
-        //The final packet will make the elapsed time move backwards???
-        if unsafe { ELAPSED } + Duration::from_millis(250) > unsafe { *DURATION } {
-            self.done = true;
+        if unsafe { ELAPSED > *DURATION } {
+            self.finished = true;
             return None;
         }
 

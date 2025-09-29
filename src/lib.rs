@@ -129,10 +129,6 @@ impl Player {
             }
         };
 
-        //Tell the output thread that a new song has started.
-        //Do not remove this.
-        unsafe { FINSIHED = false };
-
         if start_playback {
             unsafe { *STATE = State::Playing };
         } else {
@@ -143,6 +139,10 @@ impl Player {
         //Some songs don't have replay gain values and this reduces the volume jump between songs.
         unsafe { *GAIN = replay_gain.unwrap_or(0.5) }
         unsafe { DECODER = Some(decoder) };
+
+        //Tell the output thread that a new song has started.
+        //Do not remove this.
+        unsafe { FINSIHED = false };
 
         Ok(())
     }

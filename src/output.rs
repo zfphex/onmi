@@ -153,7 +153,6 @@ impl Output {
                     if let Some(decoder) = DECODER.as_mut() {
                         let sample = decoder.next_sample();
 
-                        //TODO: Not sure how to actually check if the player is finished?
                         if sample.is_none() {
                             unsafe { FINSIHED = true };
                         }
@@ -195,7 +194,7 @@ impl Output {
                 let mut frames = u32::MAX;
 
                 while frames != 0 {
-                    if *STATE != State::Playing {
+                    if *STATE != State::Playing || FINSIHED {
                         break;
                     }
 

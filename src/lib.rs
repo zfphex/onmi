@@ -41,7 +41,7 @@ static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);
 //There is some weird behaviour after the playback thread stops.
 //Ideally something else would start the thread up
 //and this would only be written on the playback thread.
-static FINSIHED: AtomicBool = AtomicBool::new(false);
+static FINISHED: AtomicBool = AtomicBool::new(false);
 
 //Seeking can change this value from any thread.
 static ELAPSED: AtomicU64 = AtomicU64::new(0);
@@ -167,7 +167,7 @@ impl Player {
         //Since the output thread will stop and set this to true.
         //Tell the output thread that a new song has started.
         //Do not remove this.
-        FINSIHED.store(false, Relaxed);
+        FINISHED.store(false, Relaxed);
 
         Ok(())
     }
@@ -182,7 +182,6 @@ impl Player {
 
     pub fn set_volume(&self, volume: u8) {
         unsafe { *VOLUME = volume as f32 / VOLUME_REDUCTION }
-        // unsafe { PLAYBACK.volume = volume as f32 / VOLUME_REDUCTION }
     }
 
     pub fn volume_up(&self) {
@@ -216,7 +215,7 @@ impl Player {
     }
 
     pub fn is_finished(&self) -> bool {
-        FINSIHED.load(Relaxed)
+        FINISHED.load(Relaxed)
     }
 
     pub fn set_output_device(&mut self, device: Device) {

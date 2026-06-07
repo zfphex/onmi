@@ -156,7 +156,7 @@ pub fn fill_buffer(output: &Output) -> u32 {
                     let sample = decoder.next_sample();
 
                     if sample.is_none() {
-                        FINSIHED.store(true, Relaxed);
+                        FINISHED.store(true, Relaxed);
                     }
 
                     let sample = sample.unwrap_or_default();
@@ -208,7 +208,7 @@ pub fn run(output: Output) {
             let mut frames = u32::MAX;
 
             while frames != 0 {
-                if *STATE != State::Playing || FINSIHED.load(Relaxed) {
+                if *STATE != State::Playing || FINISHED.load(Relaxed) {
                     break;
                 }
 

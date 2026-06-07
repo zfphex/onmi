@@ -150,13 +150,17 @@ impl Symphonia {
             return self.next_packet();
         }
 
-        let time = self.time_base.calc_time_saturating(next_packet.pts);
-        let nanos = time.as_nanos() as u64;
-        ELAPSED.store(nanos, Relaxed);
-
-        if unsafe { nanos > DURATION.as_nanos() as u64 } {
-            self.finished = true;
-            return None;
+        if let Some(time) = self.time_base.calc_time(next_packet.pts) {
+            //IDK sometimes we get negative timestamps I guess 🙄.
+            let time = time.as_secs_f64().max(0.0);
+            let duration = Duration::from_secs_f64(time);
+            if unsafe { duration > *DURATION } {
+                self.finished = true;
+                return None;
+            }
+            ELAPSED.store(duration.as_nanos() as u64, Relaxed);
+        } else {
+            unreachable!("Packet is timeless, one cannot be timeless...? Only me 🗿")
         }
 
         match self.decoder.decode(&next_packet) {

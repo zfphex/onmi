@@ -3,26 +3,22 @@ name = "onmi"
 version = "0.1.0"
 edition = "2024"
 
-# [features]
+[features]
+simd = ["symphonia/opt-simd"]
 # profile = ["mini/profile"]
 # info = ["mini/info"]
 # warn = ["mini/warn"]
 # error = ["mini/error"]
 
 [dependencies]
-# winwalk = "0.2.2"
 symphonia = { git = "https://github.com/pdeljanov/Symphonia", default-features = false, features = [
     "flac",
     "mp3",
     "ogg",
     "vorbis",
-    "opt-simd",
 ] }
-# wasapi = { version = "0.1.0", path = "../wasapi" }
 wasapi = { git = "https://github.com/zfphex/wasapi", version = "0.1.0" }
 winwalk = "0.2.2"
-
-# crossbeam-queue = "0.3.12"
 # mini = { version = "0.1.0", path = "../mini"}
 
 [dev-dependencies]

@@ -4,18 +4,22 @@ use std::time::Duration;
 
 fn main() {
     let outputs = OutputDevices::new();
-    let device = outputs.default_device();
-    let player = Player::new(device);
+
+    let output = outputs
+        .find("OUT 1-2 (3- BEHRINGER UMC 404HD 192k)")
+        .unwrap();
+    let player = Player::new(output);
+
     let song1 = r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac";
     let song2 = r"D:\OneDrive\Music\kinoue64\日常消滅\01 被害者.flac";
     player.play_song(song1, None, true).unwrap();
 
     // player.play();
-    // player.seek(std::time::Duration::from_secs(20));
     // player.stop();
     dbg!(metadata(song1, false));
 
     player.play_song(song2, None, true).unwrap();
+    player.seek_to(std::time::Duration::from_secs(80));
 
     player.set_volume(2);
 

@@ -6,7 +6,7 @@ use std::{
 use wasapi::*;
 
 //Initialise the COM library.
-static mut ONCE: Once = Once::new();
+static ONCE: Once = Once::new();
 
 pub struct OutputDevices {
     pub enumerator: IMMDeviceEnumerator,
@@ -54,8 +54,11 @@ impl OutputDevices {
         }
     }
 
-    pub fn find(&self, device: &str) -> Device {
-        todo!()
+    pub fn find(&self, device: &str) -> Option<Device> {
+        self.devices()
+            .iter()
+            .find(|d| d.name.as_str() == device)
+            .cloned()
     }
 }
 
@@ -67,120 +70,130 @@ pub struct Output {
     pub device: Device,
 }
 
-impl Output {
-    pub fn new(device: Device, sample_rate: Option<u32>) -> Self {
-        unsafe {
-            ONCE.call_once(|| CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap());
+pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
+    unsafe {
+        ONCE.call_once(|| CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap());
 
-            let client: IAudioClient = device.imm.Activate(ExecutionContext::All).unwrap();
-            let mut format =
-                (client.GetMixFormat().unwrap() as *const _ as *const WAVEFORMATEXTENSIBLE).read();
+        let client: IAudioClient = device.imm.Activate(ExecutionContext::All).unwrap();
+        let mut format =
+            (client.GetMixFormat().unwrap() as *const _ as *const WAVEFORMATEXTENSIBLE).read();
 
-            if format.Format.nChannels < 2 {
-                todo!("Support mono devices.");
-            }
+        if format.Format.nChannels < 2 {
+            todo!("Support mono devices.");
+        }
 
-            //Update format to desired sample rate.
-            if let Some(sample_rate) = sample_rate {
-                assert!(COMMON_SAMPLE_RATES.contains(&sample_rate));
-                format.Format.nSamplesPerSec = sample_rate;
-                format.Format.nAvgBytesPerSec = sample_rate * format.Format.nBlockAlign as u32;
-            }
+        //Update format to desired sample rate.
+        if let Some(sample_rate) = sample_rate {
+            assert!(COMMON_SAMPLE_RATES.contains(&sample_rate));
+            format.Format.nSamplesPerSec = sample_rate;
+            format.Format.nAvgBytesPerSec = sample_rate * format.Format.nBlockAlign as u32;
+        }
 
-            let (default, _) = client.GetDevicePeriod().unwrap();
+        let (default, _) = client.GetDevicePeriod().unwrap();
 
-            client
-                .Initialize(
-                    ShareMode::Shared,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-                    default,
-                    0,
-                    &format as *const _ as *const WAVEFORMATEX,
-                    None,
-                )
-                .unwrap();
+        client
+            .Initialize(
+                ShareMode::Shared,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                default,
+                0,
+                &format as *const _ as *const WAVEFORMATEX,
+                None,
+            )
+            .unwrap();
 
-            let event = CreateEventA(core::ptr::null_mut(), 0, 0, core::ptr::null_mut());
-            assert!(!event.is_null());
-            client.SetEventHandle(event as isize).unwrap();
+        let event = CreateEventA(core::ptr::null_mut(), 0, 0, core::ptr::null_mut());
+        assert!(!event.is_null());
+        client.SetEventHandle(event as isize).unwrap();
 
-            let render: IAudioRenderClient = client.GetService().unwrap();
-            client.Start().unwrap();
+        let render: IAudioRenderClient = client.GetService().unwrap();
+        client.Start().unwrap();
 
-            Self {
-                client,
-                render,
-                format,
-                event,
-                device,
-            }
+        Output {
+            client,
+            render,
+            format,
+            event,
+            device,
         }
     }
+}
 
-    pub fn update_sample_rate(&mut self, sample_rate: u32) {
-        if self.format.Format.nSamplesPerSec != sample_rate {
-            unsafe { self.client.Stop().unwrap() };
-            *self = Self::new(self.device.clone(), Some(sample_rate));
-        }
+pub fn update_sample_rate(output: &mut Output, sample_rate: u32) {
+    if output.format.Format.nSamplesPerSec != sample_rate {
+        unsafe { output.client.Stop().unwrap() };
+        *output = new_output(output.device.clone(), Some(sample_rate));
     }
+}
 
-    pub fn fill_buffer(&self) -> u32 {
-        unsafe {
-            let padding = self.client.GetCurrentPadding().unwrap();
-            let buffer_size = self.client.GetBufferSize().unwrap();
-            let block_align = self.format.Format.nBlockAlign;
-            let frames = buffer_size - padding;
+pub fn fill_buffer(output: &Output) -> u32 {
+    unsafe {
+        let padding = output.client.GetCurrentPadding().unwrap();
+        let buffer_size = output.client.GetBufferSize().unwrap();
+        let block_align = output.format.Format.nBlockAlign;
+        let frames = buffer_size - padding;
 
-            if frames == 0 {
-                return frames;
-            }
-
-            let size = (frames * block_align as u32) as usize;
-            let ptr = self.render.GetBuffer(frames).unwrap();
-            let buffer = std::slice::from_raw_parts_mut(ptr, size);
-            let channels = self.format.Format.nChannels as usize;
-
-            //Don't abruptly change the volume/gain when filling packets.
-            //I don't know how much overhead a threadcell creates. Maybe it's fine?
-            let volume = *VOLUME;
-            let gain = *GAIN;
-
-            for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
-                //Only allow for stereo outputs.
-                for c in 0..channels.max(2) {
-                    if let Some(decoder) = DECODER.as_mut() {
-                        let sample = decoder.next_sample();
-
-                        if sample.is_none() {
-                            FINSIHED.store(true, Relaxed);
-                        }
-
-                        let sample = sample.unwrap_or_default();
-                        let value = (sample * volume * gain).to_le_bytes();
-                        bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
-                    } else {
-                        //If there is no decoder, just fill with zeroes.
-                        bytes[c * 4..c * 4 + 4].fill(0);
-                    }
-                }
-            }
-
-            self.render.ReleaseBuffer(frames, 0).unwrap();
+        if frames == 0 {
             return frames;
         }
+
+        let size = (frames * block_align as u32) as usize;
+        let ptr = output.render.GetBuffer(frames).unwrap();
+        let buffer = std::slice::from_raw_parts_mut(ptr, size);
+        let channels = output.format.Format.nChannels as usize;
+
+        //Don't abruptly change the volume/gain when filling packets.
+        //I don't know how much overhead a threadcell creates. Maybe it's fine?
+        let volume = *VOLUME;
+        let gain = *GAIN;
+
+        for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
+            //Only allow for stereo outputs.
+            for c in 0..channels.min(2) {
+                if let Some(decoder) = DECODER.as_mut() {
+                    let sample = decoder.next_sample();
+
+                    if sample.is_none() {
+                        FINSIHED.store(true, Relaxed);
+                    }
+
+                    let sample = sample.unwrap_or_default();
+                    let value = (sample * volume * gain).to_le_bytes();
+                    bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
+                } else {
+                    //If there is no decoder, just fill with zeroes.
+                    bytes[c * 4..c * 4 + 4].fill(0);
+                }
+            }
+        }
+
+        output.render.ReleaseBuffer(frames, 0).unwrap();
+        return frames;
     }
 }
 
 pub fn run(output: Output) {
     unsafe {
         let (period, _) = output.client.GetDevicePeriod().unwrap();
-        let period = Duration::from_nanos(period as u64 * 100);
+        let mut period = Duration::from_nanos(period as u64 * 100);
         let mut last_event = Instant::now();
+        OUTPUT = Some(output);
+
         set_pro_audio_thread();
 
         loop {
+            if let Some(next) = NEXT_OUTPUT.take() {
+                let (device_period, _) = next.client.GetDevicePeriod().unwrap();
+                period = Duration::from_nanos(device_period as u64 * 100);
+                OUTPUT = Some(next);
+            }
+
+            //There should always be a valid output device.
+            //Otherwise there would be no event handle and we couldn't wait.
+            let output = OUTPUT.as_mut().unwrap();
+
             WaitForSingleObject(output.event, u32::MAX);
 
             let now = Instant::now();
@@ -199,7 +212,7 @@ pub fn run(output: Output) {
                     break;
                 }
 
-                frames = output.fill_buffer();
+                frames = fill_buffer(&output);
 
                 if i > 1 {
                     println!(

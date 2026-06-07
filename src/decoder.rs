@@ -76,9 +76,7 @@ impl Symphonia {
         })
     }
 
-    pub fn seek(&mut self, pos: f32) {
-        let pos = Duration::from_secs_f32(pos);
-
+    pub fn seek(&mut self, pos: Duration) {
         //TODO: This is pretty scuffed and might break under certain conditions.
         if unsafe { pos > *DURATION } {
             self.finished = true;
@@ -91,7 +89,7 @@ impl Symphonia {
             .seek(
                 SeekMode::Coarse,
                 SeekTo::Time {
-                    time: Time::try_from_secs_f64(pos.as_secs_f64()).unwrap_or(Time::ZERO),
+                    time: Time::from_nanos_u64(pos.as_nanos() as u64),
                     track_id: None,
                 },
             )

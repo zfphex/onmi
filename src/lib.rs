@@ -30,6 +30,7 @@ static mut DECODER: Option<Symphonia> = None;
 //Safety: The output device needs to be initalised before creating the output thread.
 //OUTPUT is only read once on creation.
 static mut OUTPUT: Option<Output> = None;
+static mut NEXT_OUTPUT: Option<Output> = None;
 
 static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) * 0.5);
 //TODO: Gain is never updated.
@@ -66,7 +67,7 @@ pub struct Player {
     //User's should not access the player from multiple threads.
     //TODO: Actually I want to defer creation of the player onto a new thread since it's really slow...
     //I feel like the language doesn't allow me to prevent misuse here 🤔.
-    _phantom: std::marker::PhantomData<*const ()>,
+    // _phantom: std::marker::PhantomData<*const ()>,
 }
 
 impl Player {
@@ -75,11 +76,11 @@ impl Player {
         //Windows requires that output devices be destroyed (sometimes) to change sample rates.
         //Not sure how to handle swapping output devices.
         std::thread::spawn(move || {
-            output::run(Output::new(device, None));
+            output::run(new_output(device, None));
         });
 
         Self {
-            _phantom: std::marker::PhantomData,
+            // _phantom: std::marker::PhantomData,
         }
     }
 
@@ -130,6 +131,12 @@ impl Player {
             }
         };
 
+        if let Some(output) = unsafe { &mut OUTPUT } {
+            if output.format.Format.nSamplesPerSec != decoder.sample_rate {
+                panic!();
+            }
+        }
+
         if start_playback {
             unsafe { *STATE = State::Playing };
         } else {
@@ -176,21 +183,19 @@ impl Player {
 
     pub fn seek_to(&self, position: Duration) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            decoder.seek(position.as_secs_f32());
+            decoder.seek(position);
         }
     }
 
     pub fn seek_forward(&self, secs: f32) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            let position = (self.elapsed().as_secs_f32() + secs).clamp(0.0, f32::MAX);
-            decoder.seek(position);
+            decoder.seek(self.elapsed() + Duration::from_secs_f32(secs));
         }
     }
 
     pub fn seek_backward(&self, secs: f32) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            let position = (self.elapsed().as_secs_f32() - secs).clamp(0.0, f32::MAX);
-            decoder.seek(position);
+            decoder.seek(self.elapsed().saturating_sub(Duration::from_secs_f32(secs)));
         }
     }
 
@@ -198,7 +203,7 @@ impl Player {
         FINSIHED.load(Relaxed)
     }
 
-    pub fn set_output_device(&self, device: &str) {
-        todo!()
+    pub fn set_output_device(&self, device: Device) {
+        unsafe { NEXT_OUTPUT = Some(new_output(device, None)) };
     }
 }

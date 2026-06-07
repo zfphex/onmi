@@ -24,7 +24,6 @@ pub const COMMON_SAMPLE_RATES: [u32; 13] = [
     5512, 8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000,
 ];
 
-//TODO: Seeking can cause race conditions. I think it's fine...?
 static mut DECODER: Option<Symphonia> = None;
 
 //Safety: The output device needs to be initalised before creating the output thread.

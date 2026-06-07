@@ -12,13 +12,14 @@ fn main() {
 
     let song1 = r"D:\OneDrive\Music\black midi\Cavalcade\08. black midi - Ascending Forth.flac";
     let song2 = r"D:\OneDrive\Music\kinoue64\日常消滅\01 被害者.flac";
+    let song3 = r"D:\OneDrive\Music\BADBADNOTGOOD\Talk Memory\8. Talk Meaning.flac";
     player.play_song(song1, None, true).unwrap();
 
     // player.play();
     // player.stop();
     dbg!(metadata(song1, false));
 
-    player.play_song(song2, None, true).unwrap();
+    player.play_song(song3, None, true).unwrap();
     player.seek_to(std::time::Duration::from_secs(80));
 
     player.set_volume(2);

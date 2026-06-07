@@ -68,6 +68,10 @@ pub struct Player {
     //TODO: Actually I want to defer creation of the player onto a new thread since it's really slow...
     //I feel like the language doesn't allow me to prevent misuse here 🤔.
     // _phantom: std::marker::PhantomData<*const ()>,
+
+    //We only use this to update the sample rate
+    //when the Output isn't some yet.
+    device: Device,
 }
 
 impl Player {
@@ -75,11 +79,13 @@ impl Player {
         //TODO: Currently the library cannot handle changing output devices.
         //Windows requires that output devices be destroyed (sometimes) to change sample rates.
         //Not sure how to handle swapping output devices.
+        let d = device.clone();
         std::thread::spawn(move || {
-            output::run(new_output(device, None));
+            output::run(new_output(d, None));
         });
 
         Self {
+            device,
             // _phantom: std::marker::PhantomData,
         }
     }
@@ -133,8 +139,18 @@ impl Player {
 
         if let Some(output) = unsafe { &mut OUTPUT } {
             if output.format.Format.nSamplesPerSec != decoder.sample_rate {
-                panic!();
+                //Update the ouput device to the correct sample rate.
+                unsafe {
+                    NEXT_OUTPUT = Some(new_output(output.device.clone(), Some(decoder.sample_rate)))
+                };
             }
+        } else {
+            //output doesn't exist so force update the sample rate.
+            //It might have matched but there is no way to know
+            //other then spinlocking which I'm not doing.
+            unsafe {
+                NEXT_OUTPUT = Some(new_output(self.device.clone(), Some(decoder.sample_rate)))
+            };
         }
 
         if start_playback {
@@ -203,7 +219,8 @@ impl Player {
         FINSIHED.load(Relaxed)
     }
 
-    pub fn set_output_device(&self, device: Device) {
+    pub fn set_output_device(&mut self, device: Device) {
+        self.device = device.clone();
         unsafe { NEXT_OUTPUT = Some(new_output(device, None)) };
     }
 }

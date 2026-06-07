@@ -1,17 +1,14 @@
-use std::io::ErrorKind;
 use std::time::Duration;
 use std::{fs::File, path::Path};
 use symphonia::core::errors::Error;
-use symphonia::core::formats::{FormatReader, Track};
+use symphonia::core::formats::{FormatReader, Track, TrackType};
 use symphonia::core::units::TimeBase;
 use symphonia::{
     core::{
-        audio::SampleBuffer,
-        codecs,
-        formats::{FormatOptions, SeekMode, SeekTo},
+        codecs::audio::{AudioDecoder, AudioDecoderOptions},
+        formats::{FormatOptions, SeekMode, SeekTo, probe::Hint},
         io::MediaSourceStream,
         meta::MetadataOptions,
-        probe::Hint,
         units::Time,
     },
     default::get_probe,
@@ -21,58 +18,63 @@ use crate::*;
 
 pub struct Symphonia {
     pub format_reader: Box<dyn FormatReader>,
-    pub decoder: Box<dyn codecs::Decoder>,
+    pub decoder: Box<dyn AudioDecoder>,
     pub track: Track,
     pub error_count: u8,
     pub finished: bool,
-    pub buffer: Option<SampleBuffer<f32>>,
+    pub buffer: Option<Vec<f32>>,
     pub pos: usize,
-    duration: u64,
-    time_base: TimeBase,
+    pub sample_rate: u32,
+    pub time_base: TimeBase,
 }
 
 impl Symphonia {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let probed = get_probe().format(
-            &Hint::default(),
+        let mut format_reader = get_probe().probe(
+            &Hint::new(),
             mss,
-            &FormatOptions {
-                prebuild_seek_index: false,
-                seek_index_fill_rate: 20,
-                enable_gapless: false,
-            },
-            &MetadataOptions::default(),
+            FormatOptions::default()
+                .prebuild_seek_index(false)
+                .seek_index_fill_period_ms(20),
+            MetadataOptions::default(),
         )?;
-
-        let track = probed.format.default_track().unwrap().to_owned();
-        let n_frames = track.codec_params.n_frames.unwrap_or_default();
-        let duration = track.codec_params.start_ts + n_frames;
-        let time_base = track.codec_params.time_base.unwrap();
+        let track = format_reader
+            .default_track(TrackType::Audio)
+            .unwrap()
+            .to_owned();
+        let time_base = track.time_base.unwrap();
+        let duration = track
+            .duration
+            .or(track.num_frames.map(symphonia::core::units::Duration::new))
+            .and_then(|duration| duration.timestamp_from(symphonia::core::units::Timestamp::ZERO))
+            .map(|duration_ts| time_base.calc_time_saturating(duration_ts))
+            .map(|time| Duration::from_nanos(time.as_nanos() as u64))
+            .unwrap_or_default();
+        let codec_params = track
+            .codec_params
+            .as_ref()
+            .and_then(|params| params.audio())
+            .unwrap();
         let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &codecs::DecoderOptions::default())?;
+            .make_audio_decoder(codec_params, &AudioDecoderOptions::default())?;
 
         unsafe {
-            let time = time_base.calc_time(duration);
-            *DURATION = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac);
+            *DURATION = duration;
         }
 
         Ok(Self {
-            format_reader: probed.format,
+            sample_rate: codec_params.sample_rate.unwrap(),
+            format_reader,
             decoder,
             track,
-            duration,
             error_count: 0,
             finished: false,
             buffer: None,
             pos: 0,
             time_base,
         })
-    }
-
-    pub fn sample_rate(&self) -> u32 {
-        self.track.codec_params.sample_rate.unwrap()
     }
 
     pub fn seek(&mut self, pos: f32) {
@@ -85,13 +87,22 @@ impl Symphonia {
         }
 
         //Ignore errors.
-        let _ = self.format_reader.seek(
-            SeekMode::Coarse,
-            SeekTo::Time {
-                time: Time::new(pos.as_secs(), pos.subsec_nanos() as f64 / 1_000_000_000.0),
-                track_id: None,
-            },
-        );
+        if self
+            .format_reader
+            .seek(
+                SeekMode::Coarse,
+                SeekTo::Time {
+                    time: Time::try_from_secs_f64(pos.as_secs_f64()).unwrap_or(Time::ZERO),
+                    track_id: None,
+                },
+            )
+            .is_ok()
+        {
+            self.decoder.reset();
+            self.buffer = None;
+            self.pos = 0;
+            self.finished = false;
+        }
 
         unsafe { ELAPSED = pos };
     }
@@ -104,8 +115,8 @@ impl Symphonia {
         }
 
         if let Some(buffer) = &self.buffer {
-            if self.pos < buffer.samples().len() {
-                let sample = buffer.samples()[self.pos];
+            if self.pos < buffer.len() {
+                let sample = buffer[self.pos];
                 self.pos += 1;
                 return Some(sample);
             } else {
@@ -118,38 +129,32 @@ impl Symphonia {
         return None;
     }
 
-    pub fn next_packet(&mut self) -> Option<SampleBuffer<f32>> {
+    pub fn next_packet(&mut self) -> Option<Vec<f32>> {
         if self.error_count > 2 || self.finished {
             return None;
         }
 
         let next_packet = match self.format_reader.next_packet() {
-            Ok(next_packet) => {
+            Ok(Some(next_packet)) => {
                 self.error_count = 0;
                 next_packet
             }
-            Err(err) => match err {
-                Error::IoError(e) if e.kind() == ErrorKind::UnexpectedEof => {
-                    //Just in case my 250ms addition is not enough.
-                    if unsafe { ELAPSED } + Duration::from_secs(1) > unsafe { *DURATION } {
-                        self.finished = true;
-                        return None;
-                    } else {
-                        self.error_count += 1;
-                        return self.next_packet();
-                    }
-                }
-                _ => {
-                    // gonk_core::log!("{}", err);
-                    self.error_count += 1;
-                    return self.next_packet();
-                }
-            },
+            Ok(None) => {
+                self.finished = true;
+                return None;
+            }
+            Err(_) => {
+                self.error_count += 1;
+                return self.next_packet();
+            }
         };
 
-        let elapsed = next_packet.ts();
-        let time = self.time_base.calc_time(elapsed);
-        unsafe { ELAPSED = Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac) };
+        if next_packet.track_id != self.track.id {
+            return self.next_packet();
+        }
+
+        let time = self.time_base.calc_time_saturating(next_packet.pts);
+        unsafe { ELAPSED = Duration::from_nanos(time.as_nanos() as u64) };
 
         if unsafe { ELAPSED > *DURATION } {
             self.finished = true;
@@ -158,9 +163,9 @@ impl Symphonia {
 
         match self.decoder.decode(&next_packet) {
             Ok(decoded) => {
-                let mut buffer =
-                    SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
-                buffer.copy_interleaved_ref(decoded);
+                //TODO: Don't allocate here.
+                let mut buffer = vec![0.0; decoded.samples_interleaved()];
+                decoded.copy_to_slice_interleaved(&mut buffer);
                 Some(buffer)
             }
             Err(_) => {

@@ -18,9 +18,13 @@ fn main() {
     // player.seek(std::time::Duration::from_secs(20));
     // player.stop();
 
-    // player
-    //     .play_song(r"D:\OneDrive\Music\kinoue64\日常消滅\01 被害者.flac")
-    //     .unwrap();
+    player
+        .play_song(
+            r"D:\OneDrive\Music\kinoue64\日常消滅\01 被害者.flac",
+            None,
+            true,
+        )
+        .unwrap();
 
     player.set_volume(2);
 

@@ -1,4 +1,4 @@
-#![allow(unused, static_mut_refs)]
+#![allow(static_mut_refs)]
 pub mod decoder;
 pub mod metadata;
 pub mod output;
@@ -11,7 +11,7 @@ pub use thread_cell::*;
 
 pub use wasapi::IMMDevice;
 
-use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
 
 //Scale the volume (0 - 100) down to something more reasonable to listen to.
@@ -37,13 +37,13 @@ static mut GAIN: ThreadCell<f32> = ThreadCell::new(0.5);
 static mut DURATION: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
 static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);
 
-//Could be atomic, needs to be written across multiple threads.
-static mut FINSIHED: bool = false;
+//There is some weird behaviour after the playback thread stops.
+//Ideally something else would start the thread up
+//and this would only be written on the playback thread.
+static FINSIHED: AtomicBool = AtomicBool::new(false);
 
-//TODO: Seeking is causing a lot of issues and should be reworked.
-//Can cause race conditions while the decoder thread readsl packets and the user tries to seek.
-// static mut ELAPSED: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
-static mut ELAPSED: Duration = Duration::new(0, 0);
+//Seeking can change this value from any thread.
+static ELAPSED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum State {
@@ -66,16 +66,21 @@ pub struct Player {
     //User's should not access the player from multiple threads.
     //TODO: Actually I want to defer creation of the player onto a new thread since it's really slow...
     //I feel like the language doesn't allow me to prevent misuse here 🤔.
-    // _phantom: PhantomData<*const ()>,
+    _phantom: std::marker::PhantomData<*const ()>,
 }
 
 impl Player {
     pub fn new(device: Device) -> Self {
+        //TODO: Currently the library cannot handle changing output devices.
+        //Windows requires that output devices be destroyed (sometimes) to change sample rates.
+        //Not sure how to handle swapping output devices.
         std::thread::spawn(move || {
-            Output::new(device, None).run();
+            output::run(Output::new(device, None));
         });
 
-        Self {}
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     pub fn state(&self) -> State {
@@ -83,7 +88,7 @@ impl Player {
     }
 
     pub fn elapsed(&self) -> Duration {
-        unsafe { ELAPSED }
+        Duration::from_nanos(ELAPSED.load(Relaxed))
     }
 
     pub fn duration(&self) -> Duration {
@@ -109,7 +114,7 @@ impl Player {
 
     pub fn play_song(
         &self,
-        path: impl AsRef<Path>,
+        path: impl AsRef<std::path::Path>,
         //Set how the volume should be scaled.
         replay_gain: Option<f32>,
         //Can start the player paused.
@@ -136,9 +141,10 @@ impl Player {
         unsafe { *GAIN = replay_gain.unwrap_or(0.5) }
         unsafe { DECODER = Some(decoder) };
 
+        //Since the output thread will stop and set this to true.
         //Tell the output thread that a new song has started.
         //Do not remove this.
-        unsafe { FINSIHED = false };
+        FINSIHED.store(false, Relaxed);
 
         Ok(())
     }
@@ -168,33 +174,28 @@ impl Player {
         (unsafe { *VOLUME } * VOLUME_REDUCTION) as u8
     }
 
-    pub fn seek(&self, position: Duration) {
+    pub fn seek_to(&self, position: Duration) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            // self.elapsed = position;
             decoder.seek(position.as_secs_f32());
         }
     }
 
-    //TODO: Removeme
-    pub fn seek_forward(&self) {
+    pub fn seek_forward(&self, secs: f32) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            let position = (unsafe { ELAPSED }.as_secs_f32() + 10.0).clamp(0.0, f32::MAX);
-            // self.elapsed = Duration::from_secs_f32(position);
+            let position = (self.elapsed().as_secs_f32() + secs).clamp(0.0, f32::MAX);
             decoder.seek(position);
         }
     }
 
-    //TODO: Removeme
-    pub fn seek_backward(&self) {
+    pub fn seek_backward(&self, secs: f32) {
         if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            let position = (unsafe { ELAPSED }.as_secs_f32() - 10.0).clamp(0.0, f32::MAX);
-            // self.elapsed = Duration::from_secs_f32(position);
+            let position = (self.elapsed().as_secs_f32() - secs).clamp(0.0, f32::MAX);
             decoder.seek(position);
         }
     }
 
     pub fn is_finished(&self) -> bool {
-        unsafe { FINSIHED }
+        FINSIHED.load(Relaxed)
     }
 
     pub fn set_output_device(&self, device: &str) {

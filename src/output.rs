@@ -154,7 +154,7 @@ impl Output {
                         let sample = decoder.next_sample();
 
                         if sample.is_none() {
-                            FINSIHED = true;
+                            FINSIHED.store(true, Relaxed);
                         }
 
                         let sample = sample.unwrap_or_default();
@@ -171,43 +171,43 @@ impl Output {
             return frames;
         }
     }
+}
 
-    pub fn run(&self) {
-        unsafe {
-            let (period, _) = self.client.GetDevicePeriod().unwrap();
-            let period = Duration::from_nanos(period as u64 * 100);
-            let mut last_event = Instant::now();
-            set_pro_audio_thread();
+pub fn run(output: Output) {
+    unsafe {
+        let (period, _) = output.client.GetDevicePeriod().unwrap();
+        let period = Duration::from_nanos(period as u64 * 100);
+        let mut last_event = Instant::now();
+        set_pro_audio_thread();
 
-            loop {
-                WaitForSingleObject(self.event, u32::MAX);
+        loop {
+            WaitForSingleObject(output.event, u32::MAX);
 
-                let now = Instant::now();
-                let elapsed = now - last_event;
-                last_event = now;
+            let now = Instant::now();
+            let elapsed = now - last_event;
+            last_event = now;
 
-                if elapsed > period + Duration::from_millis(2) {
-                    println!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
+            if elapsed > period + Duration::from_millis(2) {
+                println!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
+            }
+
+            let mut i = 0;
+            let mut frames = u32::MAX;
+
+            while frames != 0 {
+                if *STATE != State::Playing || FINSIHED.load(Relaxed) {
+                    break;
                 }
 
-                let mut i = 0;
-                let mut frames = u32::MAX;
+                frames = output.fill_buffer();
 
-                while frames != 0 {
-                    if *STATE != State::Playing || FINSIHED {
-                        break;
-                    }
-
-                    frames = self.fill_buffer();
-
-                    if i > 1 {
-                        println!(
-                            "WARNING: Missed event(s) or underflow, buffer had space for {} frames! iteration: {}",
-                            frames, i
-                        );
-                    }
-                    i += 1;
+                if i > 1 {
+                    println!(
+                        "WARNING: Missed event(s) or underflow, buffer had space for {} frames! iteration: {}",
+                        frames, i
+                    );
                 }
+                i += 1;
             }
         }
     }

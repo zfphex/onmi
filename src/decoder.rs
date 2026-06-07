@@ -103,7 +103,7 @@ impl Symphonia {
             self.finished = false;
         }
 
-        unsafe { ELAPSED = pos };
+        ELAPSED.store(pos.as_nanos() as u64, Relaxed);
     }
 
     pub fn next_sample(&mut self) -> Option<f32> {
@@ -153,9 +153,10 @@ impl Symphonia {
         }
 
         let time = self.time_base.calc_time_saturating(next_packet.pts);
-        unsafe { ELAPSED = Duration::from_nanos(time.as_nanos() as u64) };
+        let nanos = time.as_nanos() as u64;
+        ELAPSED.store(nanos, Relaxed);
 
-        if unsafe { ELAPSED > *DURATION } {
+        if unsafe { nanos > DURATION.as_nanos() as u64 } {
             self.finished = true;
             return None;
         }

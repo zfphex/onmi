@@ -154,7 +154,7 @@ impl Output {
                         let sample = decoder.next_sample();
 
                         if sample.is_none() {
-                            unsafe { FINSIHED = true };
+                            FINSIHED = true;
                         }
 
                         let sample = sample.unwrap_or_default();

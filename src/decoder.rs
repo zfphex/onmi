@@ -1,6 +1,5 @@
 use std::time::Duration;
 use std::{fs::File, path::Path};
-use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, Track, TrackType};
 use symphonia::core::units::TimeBase;
 use symphonia::{
@@ -32,7 +31,7 @@ impl Symphonia {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut format_reader = get_probe().probe(
+        let format_reader = get_probe().probe(
             &Hint::new(),
             mss,
             FormatOptions::default()

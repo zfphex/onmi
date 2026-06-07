@@ -1,23 +1,23 @@
 #![allow(unused, static_mut_refs)]
 pub mod decoder;
+pub mod metadata;
 pub mod output;
 pub mod thread_cell;
 
 pub use decoder::*;
+pub use metadata::*;
 pub use output::*;
 pub use thread_cell::*;
 
 pub use wasapi::IMMDevice;
 
-use std::marker::PhantomData;
 use std::path::Path;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 //Scale the volume (0 - 100) down to something more reasonable to listen to.
 //TODO: This should be configurable.
 pub const VOLUME_REDUCTION: f32 = 75.0;
-pub const UNKNOWN_TITLE: &str = "Unknown Title";
+pub const UNKNOWN_TITLE: &str = "UnknownTitle";
 pub const UNKNOWN_ALBUM: &str = "Unknown Album";
 pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
 pub const COMMON_SAMPLE_RATES: [u32; 13] = [
@@ -72,11 +72,7 @@ pub struct Player {
 impl Player {
     pub fn new(device: Device) -> Self {
         std::thread::spawn(move || {
-            unsafe {
-                // OUTPUT = Some(Output::new(device, None));
-                // OUTPUT.as_mut().unwrap().run();
-                Output::new(device, None).run();
-            }
+            Output::new(device, None).run();
         });
 
         Self {}

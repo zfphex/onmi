@@ -174,6 +174,8 @@ pub fn fill_buffer(output: &Output) -> u32 {
     }
 }
 
+//TODO: How can I log the errors from here?
+//Maybe some type of callback?
 pub fn run(output: Output) {
     unsafe {
         let (period, _) = output.client.GetDevicePeriod().unwrap();
@@ -201,7 +203,7 @@ pub fn run(output: Output) {
             last_event = now;
 
             if elapsed > period + Duration::from_millis(2) {
-                println!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
+                // println!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
             }
 
             let mut i = 0;
@@ -215,10 +217,10 @@ pub fn run(output: Output) {
                 frames = fill_buffer(&output);
 
                 if i > 1 {
-                    println!(
-                        "WARNING: Missed event(s) or underflow, buffer had space for {} frames! iteration: {}",
-                        frames, i
-                    );
+                    // println!(
+                    //     "WARNING: Missed event(s) or underflow, buffer had space for {} frames! iteration: {}",
+                    //     frames, i
+                    // );
                 }
                 i += 1;
             }

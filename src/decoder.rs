@@ -59,9 +59,12 @@ impl Symphonia {
         let decoder = symphonia::default::get_codecs()
             .make_audio_decoder(codec_params, &AudioDecoderOptions::default())?;
 
-        unsafe {
-            *DURATION = duration;
-        }
+        //Update the elapsed so that it's never out of sync with the duration.
+        //I had a one frame visual bug where the duration was updated before the elapsed was reset.
+        //The decoder will never write when the state is stopped.
+        unsafe { *STATE = State::Stopped }
+        ELAPSED.store(0, Relaxed);
+        unsafe { *DURATION = duration };
 
         Ok(Self {
             sample_rate: codec_params.sample_rate.unwrap(),
@@ -158,7 +161,12 @@ impl Symphonia {
                 self.finished = true;
                 return None;
             }
-            ELAPSED.store(duration.as_nanos() as u64, Relaxed);
+
+            //The elapsed time is reset to zero when playing a new song.
+            //Never overwrite the value when stopped.
+            if unsafe { *STATE != State::Stopped } {
+                ELAPSED.store(duration.as_nanos() as u64, Relaxed);
+            }
         } else {
             unreachable!("Packet is timeless, one cannot be timeless...? Only me 🗿")
         }

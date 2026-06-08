@@ -24,11 +24,12 @@ pub const COMMON_SAMPLE_RATES: [u32; 13] = [
     5512, 8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000,
 ];
 
-static mut DECODER: Option<Symphonia> = None;
+//If this is `Some` the playback thread will take it and move it into the local thread.
+//This can write from both threads but _should_ never double write.
+static mut NEXT_DECODER: Option<Symphonia> = None;
 
 //Safety: The output device needs to be initalised before creating the output thread.
 //OUTPUT is only read once on creation.
-static mut OUTPUT: Option<Output> = None;
 static mut NEXT_OUTPUT: Option<Output> = None;
 
 static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) * 0.5);
@@ -36,6 +37,7 @@ static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) *
 static mut GAIN: ThreadCell<f32> = ThreadCell::new(0.5);
 static mut DURATION: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
 static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);
+static mut ACTIVE_SAMPLE_RATE: ThreadCell<u32> = ThreadCell::new(0);
 
 //There is some weird behaviour after the playback thread stops.
 //Ideally something else would start the thread up
@@ -44,6 +46,9 @@ static FINISHED: AtomicBool = AtomicBool::new(false);
 
 //Seeking can change this value from any thread.
 static ELAPSED: AtomicU64 = AtomicU64::new(0);
+
+//Just use the max value to waiting to seek.
+static SEEK: AtomicU64 = AtomicU64::new(u64::MAX);
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum State {
@@ -136,17 +141,7 @@ impl Player {
             }
         };
 
-        if let Some(output) = unsafe { &mut OUTPUT } {
-            if output.format.Format.nSamplesPerSec != decoder.sample_rate {
-                //Update the ouput device to the correct sample rate.
-                unsafe {
-                    NEXT_OUTPUT = Some(new_output(output.device.clone(), Some(decoder.sample_rate)))
-                };
-            }
-        } else {
-            //output doesn't exist so force update the sample rate.
-            //It might have matched but there is no way to know
-            //other then spinlocking which I'm not doing.
+        if unsafe { *ACTIVE_SAMPLE_RATE } != decoder.sample_rate {
             unsafe {
                 NEXT_OUTPUT = Some(new_output(self.device.clone(), Some(decoder.sample_rate)))
             };
@@ -161,7 +156,7 @@ impl Player {
         //Default to half volume, not sure if this is a good deafult.
         //Some songs don't have replay gain values and this reduces the volume jump between songs.
         unsafe { *GAIN = replay_gain.unwrap_or(0.5) }
-        unsafe { DECODER = Some(decoder) };
+        unsafe { NEXT_DECODER = Some(decoder) };
 
         //Since the output thread will stop and set this to true.
         //Tell the output thread that a new song has started.
@@ -196,21 +191,17 @@ impl Player {
     }
 
     pub fn seek_to(&self, position: Duration) {
-        if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            decoder.seek(position);
-        }
+        SEEK.store(position.as_nanos() as u64, Relaxed);
     }
 
     pub fn seek_forward(&self, secs: f32) {
-        if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            decoder.seek(self.elapsed() + Duration::from_secs_f32(secs));
-        }
+        let duration = self.elapsed() + Duration::from_secs_f32(secs);
+        SEEK.store(duration.as_nanos() as u64, Relaxed);
     }
 
     pub fn seek_backward(&self, secs: f32) {
-        if let Some(decoder) = unsafe { DECODER.as_mut() } {
-            decoder.seek(self.elapsed().saturating_sub(Duration::from_secs_f32(secs)));
-        }
+        let duration = self.elapsed().saturating_sub(Duration::from_secs_f32(secs));
+        SEEK.store(duration.as_nanos() as u64, Relaxed);
     }
 
     pub fn is_finished(&self) -> bool {

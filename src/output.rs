@@ -128,7 +128,7 @@ pub fn update_sample_rate(output: &mut Output, sample_rate: u32) {
     }
 }
 
-pub fn fill_buffer(output: &Output) -> u32 {
+pub fn fill_buffer(output: &Output, decoder: &mut Option<Symphonia>) -> u32 {
     unsafe {
         let padding = output.client.GetCurrentPadding().unwrap();
         let buffer_size = output.client.GetBufferSize().unwrap();
@@ -152,7 +152,7 @@ pub fn fill_buffer(output: &Output) -> u32 {
         for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
             //Only allow for stereo outputs.
             for c in 0..channels.min(2) {
-                if let Some(decoder) = DECODER.as_mut() {
+                if let Some(decoder) = decoder {
                     let sample = decoder.next_sample();
 
                     if sample.is_none() {
@@ -181,20 +181,39 @@ pub fn run(output: Output) {
         let (period, _) = output.client.GetDevicePeriod().unwrap();
         let mut period = Duration::from_nanos(period as u64 * 100);
         let mut last_event = Instant::now();
-        OUTPUT = Some(output);
 
         set_pro_audio_thread();
 
+        //Update the sample rate.
+        *ACTIVE_SAMPLE_RATE = output.format.Format.nSamplesPerSec;
+
+        let mut output = Some(output);
+        let mut decoder: Option<Symphonia> = None;
+
         loop {
-            if let Some(next) = NEXT_OUTPUT.take() {
-                let (device_period, _) = next.client.GetDevicePeriod().unwrap();
+            if let Some(new_output) = NEXT_OUTPUT.take() {
+                let (device_period, _) = new_output.client.GetDevicePeriod().unwrap();
                 period = Duration::from_nanos(device_period as u64 * 100);
-                OUTPUT = Some(next);
+                *ACTIVE_SAMPLE_RATE = new_output.format.Format.nSamplesPerSec;
+                output = Some(new_output);
+            }
+
+            if let Some(new_decoder) = NEXT_DECODER.take() {
+                decoder = Some(new_decoder);
             }
 
             //There should always be a valid output device.
             //Otherwise there would be no event handle and we couldn't wait.
-            let output = OUTPUT.as_mut().unwrap();
+            let output = output.as_mut().unwrap();
+
+            //Seek if the user wants too :)
+            let seek = SEEK.load(Relaxed);
+            if seek != u64::MAX {
+                if let Some(decoder) = decoder.as_mut() {
+                    decoder.seek(Duration::from_nanos(seek));
+                }
+                SEEK.store(u64::MAX, Relaxed);
+            }
 
             WaitForSingleObject(output.event, u32::MAX);
 
@@ -214,7 +233,7 @@ pub fn run(output: Output) {
                     break;
                 }
 
-                frames = fill_buffer(&output);
+                frames = fill_buffer(&output, &mut decoder);
 
                 if i > 1 {
                     // println!(

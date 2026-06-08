@@ -27,13 +27,10 @@ pub const COMMON_SAMPLE_RATES: [u32; 13] = [
 //If this is `Some` the playback thread will take it and move it into the local thread.
 //This can write from both threads but _should_ never double write.
 static mut NEXT_DECODER: Option<Symphonia> = None;
-
-//Safety: The output device needs to be initalised before creating the output thread.
-//OUTPUT is only read once on creation.
 static mut NEXT_OUTPUT: Option<Output> = None;
 
+//Should be fine
 static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) * 0.5);
-//TODO: Gain is never updated.
 static mut GAIN: ThreadCell<f32> = ThreadCell::new(0.5);
 static mut DURATION: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
 static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);

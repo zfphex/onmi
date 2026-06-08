@@ -188,7 +188,7 @@ impl Player {
     }
 
     pub fn volume_down(&self) {
-        self.set_volume((self.volume() - 5).clamp(0, 100))
+        self.set_volume((self.volume().saturating_sub(5)).clamp(0, 100))
     }
 
     pub fn volume(&self) -> u8 {

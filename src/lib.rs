@@ -44,7 +44,7 @@ static FINISHED: AtomicBool = AtomicBool::new(false);
 //Seeking can change this value from any thread.
 static ELAPSED: AtomicU64 = AtomicU64::new(0);
 
-//Just use the max value to waiting to seek.
+//Just use the max value as None/not seeking.
 static SEEK: AtomicU64 = AtomicU64::new(u64::MAX);
 
 #[derive(PartialEq, Clone, Debug)]

@@ -16,6 +16,7 @@ symphonia = { git = "https://github.com/pdeljanov/Symphonia", default-features =
     "mp3",
     "ogg",
     "vorbis",
+    "all-meta"
 ] }
 wasapi = { git = "https://github.com/zfphex/wasapi", version = "0.1.0" }
 winwalk = "0.2.2"

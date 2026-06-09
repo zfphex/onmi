@@ -184,9 +184,6 @@ pub fn run(output: Output) {
 
         set_pro_audio_thread();
 
-        //Update the sample rate.
-        *ACTIVE_SAMPLE_RATE = output.format.Format.nSamplesPerSec;
-
         let mut output = Some(output);
         let mut decoder: Option<Symphonia> = None;
 
@@ -194,7 +191,6 @@ pub fn run(output: Output) {
             if let Some(new_output) = NEXT_OUTPUT.take() {
                 let (device_period, _) = new_output.client.GetDevicePeriod().unwrap();
                 period = Duration::from_nanos(device_period as u64 * 100);
-                *ACTIVE_SAMPLE_RATE = new_output.format.Format.nSamplesPerSec;
                 output = Some(new_output);
             }
 

@@ -34,7 +34,6 @@ static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) *
 static mut GAIN: ThreadCell<f32> = ThreadCell::new(0.5);
 static mut DURATION: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
 static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);
-static mut ACTIVE_SAMPLE_RATE: ThreadCell<u32> = ThreadCell::new(0);
 
 //There is some weird behaviour after the playback thread stops.
 //Ideally something else would start the thread up
@@ -72,7 +71,8 @@ pub struct Player {
 
     //We only use this to update the sample rate
     //when the Output isn't some yet.
-    device: Device,
+    pub device: Device,
+    pub current_song_sample_rate: Option<u32>,
 }
 
 impl Player {
@@ -87,6 +87,7 @@ impl Player {
 
         Self {
             device,
+            current_song_sample_rate: None,
             // _phantom: std::marker::PhantomData,
         }
     }
@@ -121,7 +122,7 @@ impl Player {
     }
 
     pub fn play_song(
-        &self,
+        &mut self,
         path: impl AsRef<std::path::Path>,
         //Set how the volume should be scaled.
         replay_gain: Option<f32>,
@@ -138,11 +139,14 @@ impl Player {
             }
         };
 
-        if unsafe { *ACTIVE_SAMPLE_RATE } != decoder.sample_rate {
+        //Update the sample rate if it's different, or it hasn't been set yet.
+        if self.current_song_sample_rate.unwrap_or_default() != decoder.sample_rate {
             unsafe {
                 NEXT_OUTPUT = Some(new_output(self.device.clone(), Some(decoder.sample_rate)))
             };
         }
+
+        self.current_song_sample_rate = Some(decoder.sample_rate);
 
         if start_playback {
             unsafe { *STATE = State::Playing };
@@ -207,6 +211,6 @@ impl Player {
 
     pub fn set_output_device(&mut self, device: Device) {
         self.device = device.clone();
-        unsafe { NEXT_OUTPUT = Some(new_output(device, None)) };
+        unsafe { NEXT_OUTPUT = Some(new_output(device, self.current_song_sample_rate)) };
     }
 }

@@ -149,14 +149,23 @@ pub fn fill_buffer(output: &Output, decoder: &mut Option<Symphonia>) -> u32 {
         let volume = *VOLUME;
         let gain = *GAIN;
 
-        for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
+        'outer: for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
+            //Do not read the the decoder if it's finished.
+            //This could reset the finished state and cause songs to skip.
+            if FINISHED.load(Relaxed) {
+                break;
+            }
+
             //Only allow for stereo outputs.
             for c in 0..channels.min(2) {
                 if let Some(decoder) = decoder {
                     let sample = decoder.next_sample();
 
                     if sample.is_none() {
+                        // eprintln!("Finished (fill_buffer) sample.is_none()");
                         FINISHED.store(true, Relaxed);
+                        //Make sure finished isn't set to true again.
+                        break 'outer;
                     }
 
                     let sample = sample.unwrap_or_default();
@@ -195,6 +204,7 @@ pub fn run(output: Output) {
             }
 
             if let Some(new_decoder) = NEXT_DECODER.take() {
+                FINISHED.store(false, Relaxed);
                 decoder = Some(new_decoder);
             }
 
@@ -218,7 +228,7 @@ pub fn run(output: Output) {
             last_event = now;
 
             if elapsed > period + Duration::from_millis(2) {
-                // println!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
+                // eprintln!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
             }
 
             let mut i = 0;
@@ -232,7 +242,7 @@ pub fn run(output: Output) {
                 frames = fill_buffer(&output, &mut decoder);
 
                 if i > 1 {
-                    // println!(
+                    // eprintln!(
                     //     "WARNING: Missed event(s) or underflow, buffer had space for {} frames! iteration: {}",
                     //     frames, i
                     // );

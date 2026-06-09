@@ -129,6 +129,11 @@ impl Player {
         //Can start the player paused.
         start_playback: bool,
     ) -> Result<(), String> {
+        //Since the output thread will stop and set this to true.
+        //Tell the output thread that a new song has started.
+        //Do not remove this.
+        FINISHED.store(false, Relaxed);
+
         let decoder = match Symphonia::new(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -158,11 +163,6 @@ impl Player {
         //Some songs don't have replay gain values and this reduces the volume jump between songs.
         unsafe { *GAIN = replay_gain.unwrap_or(0.5) }
         unsafe { NEXT_DECODER = Some(decoder) };
-
-        //Since the output thread will stop and set this to true.
-        //Tell the output thread that a new song has started.
-        //Do not remove this.
-        FINISHED.store(false, Relaxed);
 
         Ok(())
     }

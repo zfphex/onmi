@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 use std::{fs::File, path::Path};
 use symphonia::core::formats::{FormatReader, Track, TrackType};
@@ -25,11 +26,13 @@ pub struct Symphonia {
     pub pos: usize,
     pub sample_rate: u32,
     pub time_base: TimeBase,
+    pub path: PathBuf,
 }
 
 impl Symphonia {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = File::open(path)?;
+        let file = File::open(path.as_ref())?;
+        let path = path.as_ref().to_path_buf();
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
         let format_reader = get_probe().probe(
             &Hint::new(),
@@ -76,6 +79,7 @@ impl Symphonia {
             buffer: None,
             pos: 0,
             time_base,
+            path,
         })
     }
 
@@ -109,9 +113,12 @@ impl Symphonia {
 
     pub fn next_sample(&mut self) -> Option<f32> {
         if self.buffer.is_none() {
-            if let Some(packet) = self.next_packet() {
-                self.buffer = Some(packet);
-            }
+            let Some(buffer) = self.next_packet() else {
+                // The player must have finished.
+                return None;
+            };
+
+            self.buffer = Some(buffer);
         }
 
         if let Some(buffer) = &self.buffer {
@@ -126,7 +133,7 @@ impl Symphonia {
             }
         }
 
-        return None;
+        unreachable!()
     }
 
     pub fn next_packet(&mut self) -> Option<Vec<f32>> {
@@ -140,7 +147,6 @@ impl Symphonia {
                 next_packet
             }
             Ok(None) => {
-                self.finished = true;
                 return None;
             }
             Err(_) => {

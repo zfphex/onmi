@@ -176,7 +176,7 @@ impl Player {
     }
 
     pub fn set_volume(&self, volume: u8) {
-        unsafe { *VOLUME = volume as f32 / VOLUME_REDUCTION }
+        unsafe { *VOLUME = volume.clamp(0, 100) as f32 / VOLUME_REDUCTION }
     }
 
     pub fn volume_up(&self) {

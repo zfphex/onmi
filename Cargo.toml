@@ -1,31 +1,4 @@
-[package]
-name = "onmi"
-version = "0.1.0"
-edition = "2024"
-
-[features]
-simd = ["symphonia/opt-simd"]
-# profile = ["mini/profile"]
-# info = ["mini/info"]
-# warn = ["mini/warn"]
-# error = ["mini/error"]
-
-[dependencies]
-symphonia = { git = "https://github.com/pdeljanov/Symphonia", default-features = false, features = [
-    "flac",
-    "mp3",
-    "ogg",
-    "vorbis",
-    "all-meta"
-] }
-wasapi = { git = "https://github.com/zfphex/wasapi", version = "0.1.0" }
-winwalk = "0.2.2"
-# mini = { version = "0.1.0", path = "../mini"}
-
-[dev-dependencies]
-criterion = "0.5.1"
-
-[[bench]]
-name = "flac"
-harness = false
-
+[workspace]
+resolver = "3"
+members = ["onmi", "wasapi", "coreaudio"]
+default-members = ["onmi"]

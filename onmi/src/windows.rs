@@ -1,3 +1,14 @@
+pub use wasapi::IMMDevice;
+
+#[derive(Debug, Clone)]
+pub struct Device {
+    pub imm: IMMDevice,
+    pub name: String,
+}
+
+unsafe impl Send for Device {}
+unsafe impl Sync for Device {}
+
 use crate::*;
 use std::{
     sync::Once,
@@ -186,7 +197,7 @@ pub fn fill_buffer(output: &Output, decoder: &mut Option<Symphonia>) -> u32 {
 
 //TODO: How can I log the errors from here?
 //Maybe some type of callback?
-pub fn run(output: Output) {
+pub fn run_output(output: Output) {
     unsafe {
         let (period, _) = output.client.GetDevicePeriod().unwrap();
         let mut period = Duration::from_nanos(period as u64 * 100);

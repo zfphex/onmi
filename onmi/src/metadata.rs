@@ -239,6 +239,7 @@ pub fn flac_metadata(path: impl AsRef<Path>) -> Result<Song, Box<dyn std::error:
 }
 
 #[cfg(test)]
+#[cfg(target_os = "windows")]
 mod tests {
     use crate::*;
 

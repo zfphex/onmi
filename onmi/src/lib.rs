@@ -1,15 +1,22 @@
 #![allow(static_mut_refs)]
+
 pub mod decoder;
 pub mod metadata;
-pub mod output;
 pub mod thread_cell;
 
 pub use decoder::*;
 pub use metadata::*;
-pub use output::*;
 pub use thread_cell::*;
 
-pub use wasapi::IMMDevice;
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
+
+#[cfg(target_os = "windows")]
+pub use windows::*;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
@@ -54,15 +61,6 @@ pub enum State {
     Stopped,
 }
 
-#[derive(Debug, Clone)]
-pub struct Device {
-    pub imm: IMMDevice,
-    pub name: String,
-}
-
-unsafe impl Send for Device {}
-unsafe impl Sync for Device {}
-
 pub struct Player {
     //Force !Send + !Sync
     //User's should not access the player from multiple threads.
@@ -83,7 +81,7 @@ impl Player {
         //Not sure how to handle swapping output devices.
         let d = device.clone();
         std::thread::spawn(move || {
-            output::run(new_output(d, None));
+            run_output(new_output(d, None));
         });
 
         Self {

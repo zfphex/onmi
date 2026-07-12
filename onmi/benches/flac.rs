@@ -1,13 +1,13 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use miniwalk::*;
 use onmi::*;
-use winwalk::DirEntry;
 
 fn custom(files: &[DirEntry]) -> Vec<Result<Song, String>> {
     files
         .iter()
         .map(|file| match flac_metadata(&file.path) {
             Ok(song) => Ok(song),
-            Err(err) => Err(format!("Error: ({err}) @ {}", file.path)),
+            Err(err) => Err(format!("Error: ({err}) @ {}", file.path.display())),
         })
         .collect()
 }
@@ -25,7 +25,7 @@ fn flac(c: &mut Criterion) {
     let mut group = c.benchmark_group("flac");
     group.sample_size(10);
 
-    let paths: Vec<winwalk::DirEntry> = winwalk::walkdir(PATH, 0)
+    let paths: Vec<DirEntry> = walkdir(PATH, 0)
         .into_iter()
         .flatten()
         .filter(|entry| match entry.extension() {

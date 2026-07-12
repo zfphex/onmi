@@ -20,9 +20,10 @@ pub use windows::*;
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
-pub const VOLUME_REDUCTION: f32 = 75.0;
+pub const VOLUME_REDUCTION: f32 = DEFAULT_VOLUME_REDUCTION;
 pub const UNKNOWN_TITLE: &str = "UnknownTitle";
 pub const UNKNOWN_ALBUM: &str = "Unknown Album";
 pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
@@ -42,14 +43,15 @@ pub struct Player {
     pub state: Arc<PlayerState>,
     pub device: Device,
     pub current_song_sample_rate: Option<u32>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Player {
     pub fn new(device: Device) -> Self {
-        let state = PlayerState::global();
+        let state = PlayerState::new();
         let d = device.clone();
         let thread_state = Arc::clone(&state);
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             run_output(thread_state, new_output(d, None));
         });
 
@@ -57,6 +59,7 @@ impl Player {
             state,
             device,
             current_song_sample_rate: None,
+            thread: Some(thread),
         }
     }
 
@@ -90,15 +93,18 @@ impl Player {
         };
 
         if self.current_song_sample_rate.unwrap_or_default() != decoder.sample_rate {
-            self.state
-                .pending_output
-                .publish(new_output(self.device.clone(), Some(decoder.sample_rate)));
+            if let Some(output) = try_new_output(self.device.clone(), Some(decoder.sample_rate)) {
+                self.state.pending_output.publish(output);
+            } else {
+                self.state.set_error(RuntimeError::OutputOpen);
+            }
         }
 
         self.current_song_sample_rate = Some(decoder.sample_rate);
 
         self.state.state.store(State::Stopped as u8, Relaxed);
         self.state.elapsed.store(0, Relaxed);
+        self.state.finished.store(false, Relaxed);
         self.state
             .duration
             .store(decoder.duration.as_nanos() as u64, Relaxed);
@@ -125,19 +131,35 @@ impl Player {
         self.state.state.store(State::Paused as u8, Relaxed);
     }
 
-    pub fn set_volume(&self, volume: u8) {
+    pub fn set_volume_reduction(&self, reduction: f32) {
+        let reduction = reduction.max(1.0);
+        let level = (f32::from_bits(self.state.volume.load(Relaxed))
+            * f32::from_bits(self.state.volume_reduction.load(Relaxed)))
+        .clamp(0.0, 100.0);
+        self.state
+            .volume_reduction
+            .store(reduction.to_bits(), Relaxed);
         self.state
             .volume
-            .store((volume.clamp(0, 100) as f32 / VOLUME_REDUCTION).to_bits(), Relaxed);
+            .store((level / reduction).to_bits(), Relaxed);
+    }
+
+    pub fn set_volume(&self, volume: u8) {
+        let reduction = f32::from_bits(self.state.volume_reduction.load(Relaxed));
+        self.state
+            .volume
+            .store((volume.clamp(0, 100) as f32 / reduction).to_bits(), Relaxed);
     }
 
     pub fn volume_up(&self) {
-        let volume = (f32::from_bits(self.state.volume.load(Relaxed)) * VOLUME_REDUCTION) as u8;
+        let reduction = f32::from_bits(self.state.volume_reduction.load(Relaxed));
+        let volume = (f32::from_bits(self.state.volume.load(Relaxed)) * reduction) as u8;
         self.set_volume((volume + 5).clamp(0, 100));
     }
 
     pub fn volume_down(&self) {
-        let volume = (f32::from_bits(self.state.volume.load(Relaxed)) * VOLUME_REDUCTION) as u8;
+        let reduction = f32::from_bits(self.state.volume_reduction.load(Relaxed));
+        let volume = (f32::from_bits(self.state.volume.load(Relaxed)) * reduction) as u8;
         self.set_volume(volume.saturating_sub(5).clamp(0, 100));
     }
 
@@ -149,9 +171,10 @@ impl Player {
 
     pub fn seek_forward(&self, secs: f32) {
         let elapsed = Duration::from_nanos(self.state.elapsed.load(Relaxed));
-        self.state
-            .seek
-            .store((elapsed + Duration::from_secs_f32(secs)).as_nanos() as u64, Relaxed);
+        self.state.seek.store(
+            (elapsed + Duration::from_secs_f32(secs)).as_nanos() as u64,
+            Relaxed,
+        );
     }
 
     pub fn seek_backward(&self, secs: f32) {
@@ -166,8 +189,37 @@ impl Player {
 
     pub fn set_output_device(&mut self, device: Device) {
         self.device = device.clone();
-        self.state
-            .pending_output
-            .publish(new_output(device, self.current_song_sample_rate));
+        self.state.follow_default.store(false, Relaxed);
+        if let Some(output) = try_new_output(device, self.current_song_sample_rate) {
+            self.state.pending_output.publish(output);
+        } else {
+            self.state.set_error(RuntimeError::OutputOpen);
+        }
+    }
+
+    pub fn follow_default_device(&mut self, follow: bool) {
+        self.state.follow_default.store(follow, Relaxed);
+        if follow {
+            let device = OutputDevices::new().default_device();
+            self.device = device.clone();
+            if let Some(output) = try_new_output(device, self.current_song_sample_rate) {
+                self.state.pending_output.publish(output);
+            } else {
+                self.state.set_error(RuntimeError::OutputOpen);
+            }
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        self.state.shutdown.store(true, Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for Player {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }

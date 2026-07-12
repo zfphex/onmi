@@ -8,6 +8,7 @@ pub struct SecurityAttributes {
 }
 
 #[link(name = "Avrt")]
+#[link(name = "Kernel32")]
 unsafe extern "system" {
     pub fn CreateEventA(
         lpEventAttributes: *mut SecurityAttributes,
@@ -16,6 +17,8 @@ unsafe extern "system" {
         lpName: *const i8,
     ) -> *mut c_void;
     pub fn WaitForSingleObject(hHandle: *mut c_void, dwMilliseconds: u32) -> u32;
+    pub fn SetEvent(hEvent: *mut c_void) -> i32;
+    pub fn CloseHandle(hObject: *mut c_void) -> i32;
     pub fn AvSetMmThreadCharacteristicsA(TaskName: *const i8, TaskIndex: *mut u32) -> *mut c_void;
     pub fn GetLastError() -> u32;
 }

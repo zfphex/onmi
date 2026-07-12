@@ -1,35 +1,57 @@
-use crate::{Output, State, Symphonia, VOLUME_REDUCTION};
-use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use crate::{Output, State, Symphonia};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::Arc;
 
-static PLAYER_STATE: OnceLock<Arc<PlayerState>> = OnceLock::new();
+pub const DEFAULT_VOLUME_REDUCTION: f32 = 75.0;
+
+#[repr(u8)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum RuntimeError {
+    None = 0,
+    OutputOpen = 1,
+    StreamStart = 2,
+}
 
 pub struct Mailbox<T> {
-    pub slot: UnsafeCell<Option<T>>,
-    pub full: AtomicBool,
+    pub ptr: AtomicPtr<T>,
 }
 
 impl<T> Mailbox<T> {
     pub const fn new() -> Self {
         Self {
-            slot: UnsafeCell::new(None),
-            full: AtomicBool::new(false),
+            ptr: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
     pub fn publish(&self, value: T) {
-        unsafe {
-            *self.slot.get() = Some(value);
+        let new = Box::into_raw(Box::new(value));
+        let old = self.ptr.swap(new, Ordering::AcqRel);
+        if !old.is_null() {
+            unsafe {
+                drop(Box::from_raw(old));
+            }
         }
-        self.full.store(true, Ordering::Release);
     }
 
     pub fn take(&self) -> Option<T> {
-        if !self.full.swap(false, Ordering::AcqRel) {
-            return None;
+        let p = self.ptr.swap(ptr::null_mut(), Ordering::AcqRel);
+        if p.is_null() {
+            None
+        } else {
+            unsafe { Some(*Box::from_raw(p)) }
         }
-        unsafe { (*self.slot.get()).take() }
+    }
+}
+
+impl<T> Drop for Mailbox<T> {
+    fn drop(&mut self) {
+        let p = *self.ptr.get_mut();
+        if !p.is_null() {
+            unsafe {
+                drop(Box::from_raw(p));
+            }
+        }
     }
 }
 
@@ -40,33 +62,46 @@ pub struct PlayerState {
     pub state: AtomicU8,
     pub volume: AtomicU32,
     pub gain: AtomicU32,
+    pub volume_reduction: AtomicU32,
     pub elapsed: AtomicU64,
     pub duration: AtomicU64,
     pub seek: AtomicU64,
     pub finished: AtomicBool,
     pub decoder_pending: AtomicBool,
+    pub shutdown: AtomicBool,
+    pub follow_default: AtomicBool,
+    pub last_error: AtomicU8,
     pub pending_decoder: Mailbox<Symphonia>,
     pub pending_output: Mailbox<Output>,
 }
 
 impl PlayerState {
-    pub fn global() -> Arc<PlayerState> {
-        PLAYER_STATE
-            .get_or_init(|| {
-                Arc::new(PlayerState {
-                    state: AtomicU8::new(State::Stopped as u8),
-                    volume: AtomicU32::new(((15.0 / VOLUME_REDUCTION) * 0.5).to_bits()),
-                    gain: AtomicU32::new(0.5f32.to_bits()),
-                    elapsed: AtomicU64::new(0),
-                    duration: AtomicU64::new(0),
-                    seek: AtomicU64::new(u64::MAX),
-                    finished: AtomicBool::new(false),
-                    decoder_pending: AtomicBool::new(false),
-                    pending_decoder: Mailbox::new(),
-                    pending_output: Mailbox::new(),
-                })
-            })
-            .clone()
+    pub fn new() -> Arc<Self> {
+        Arc::new(PlayerState {
+            state: AtomicU8::new(State::Stopped as u8),
+            volume: AtomicU32::new(((15.0 / DEFAULT_VOLUME_REDUCTION) * 0.5).to_bits()),
+            gain: AtomicU32::new(0.5f32.to_bits()),
+            volume_reduction: AtomicU32::new(DEFAULT_VOLUME_REDUCTION.to_bits()),
+            elapsed: AtomicU64::new(0),
+            duration: AtomicU64::new(0),
+            seek: AtomicU64::new(u64::MAX),
+            finished: AtomicBool::new(false),
+            decoder_pending: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
+            follow_default: AtomicBool::new(false),
+            last_error: AtomicU8::new(RuntimeError::None as u8),
+            pending_decoder: Mailbox::new(),
+            pending_output: Mailbox::new(),
+        })
+    }
+
+    pub fn set_error(&self, error: RuntimeError) {
+        self.last_error.store(error as u8, Ordering::Relaxed);
+    }
+
+    pub fn mark_finished(&self) {
+        self.finished.store(true, Ordering::Relaxed);
+        self.state.store(State::Stopped as u8, Ordering::Relaxed);
     }
 }
 

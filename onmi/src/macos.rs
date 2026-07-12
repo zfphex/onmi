@@ -1,5 +1,10 @@
 use crate::*;
-use coreaudio::{AudioDevice, AudioStream};
+use coreaudio::{
+    AudioDevice, AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress,
+    AudioStream, K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE,
+    K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN, K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+    K_AUDIO_OBJECT_SYSTEM_OBJECT,
+};
 use std::ffi::c_void;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::Arc;
@@ -53,25 +58,31 @@ pub struct Output {
 
 unsafe impl Send for Output {}
 
-pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
-    let mut channels = device.audio.output_channel_count().unwrap_or(2);
-    if channels < 2 {
-        channels = 2;
-    }
+pub fn try_new_output(device: Device, sample_rate: Option<u32>) -> Option<Output> {
+    let channels = match device.audio.output_channel_count() {
+        Ok(0) | Err(_) => 2,
+        Ok(c) => c,
+    };
 
     let sample_rate = match sample_rate {
         Some(rate) => {
-            assert!(COMMON_SAMPLE_RATES.contains(&rate));
+            if !COMMON_SAMPLE_RATES.contains(&rate) {
+                return None;
+            }
             rate
         }
         None => device.audio.sample_rate().unwrap_or(44100.0) as u32,
     };
 
-    Output {
+    Some(Output {
         device,
         sample_rate,
         channels,
-    }
+    })
+}
+
+pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
+    try_new_output(device, sample_rate).expect("failed to open output")
 }
 
 struct AudioCtx {
@@ -84,6 +95,13 @@ extern "C" fn render_callback(context: *mut c_void, buffer_ptr: *mut f32, total_
     unsafe {
         let ctx = &mut *(context as *mut AudioCtx);
         let state = &*ctx.state;
+
+        if state.shutdown.load(Relaxed) {
+            let buffer =
+                std::slice::from_raw_parts_mut(buffer_ptr, total_samples);
+            buffer.fill(0.0);
+            return;
+        }
 
         if let Some(new_decoder) = state.pending_decoder.take() {
             state.finished.store(false, Relaxed);
@@ -105,7 +123,7 @@ extern "C" fn render_callback(context: *mut c_void, buffer_ptr: *mut f32, total_
     }
 }
 
-fn start_stream(output: &Output, ctx: *mut c_void) -> AudioStream {
+fn start_stream(output: &Output, ctx: *mut c_void) -> Option<AudioStream> {
     unsafe {
         AudioStream::start_output(
             output.device.audio,
@@ -114,7 +132,32 @@ fn start_stream(output: &Output, ctx: *mut c_void) -> AudioStream {
             render_callback,
             ctx,
         )
-        .unwrap()
+        .ok()
+    }
+}
+
+fn default_output_id() -> Option<AudioObjectID> {
+    let address = AudioObjectPropertyAddress {
+        m_selector: K_AUDIO_HARDWARE_PROPERTY_DEFAULT_OUTPUT_DEVICE,
+        m_scope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+        m_element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+    };
+    let mut device_id: AudioObjectID = 0;
+    let mut data_size = size_of::<AudioObjectID>() as u32;
+    let status = unsafe {
+        AudioObjectGetPropertyData(
+            K_AUDIO_OBJECT_SYSTEM_OBJECT,
+            &address,
+            0,
+            std::ptr::null(),
+            &mut data_size,
+            &mut device_id as *mut AudioObjectID as *mut c_void,
+        )
+    };
+    if status == 0 && device_id != 0 {
+        Some(device_id)
+    } else {
+        None
     }
 }
 
@@ -126,16 +169,69 @@ pub fn run_output(state: Arc<PlayerState>, mut output: Output) {
     });
     let ctx_ptr = ctx.as_mut() as *mut AudioCtx as *mut c_void;
 
-    let mut stream = start_stream(&output, ctx_ptr);
+    let mut stream = match start_stream(&output, ctx_ptr) {
+        Some(s) => Some(s),
+        None => {
+            state.set_error(RuntimeError::StreamStart);
+            None
+        }
+    };
+
+    let mut last_default = default_output_id();
 
     loop {
-        if let Some(new_output) = state.pending_output.take() {
-            drop(stream);
-            output = new_output;
-            ctx.channels = output.channels;
-            stream = start_stream(&output, ctx_ptr);
+        if state.shutdown.load(Relaxed) {
+            break;
         }
 
-        std::thread::park_timeout(Duration::from_millis(50));
+        if let Some(new_output) = state.pending_output.take() {
+            drop(stream.take());
+            output = new_output;
+            ctx.channels = output.channels;
+            stream = match start_stream(&output, ctx_ptr) {
+                Some(s) => Some(s),
+                None => {
+                    state.set_error(RuntimeError::StreamStart);
+                    None
+                }
+            };
+        }
+
+        if state.follow_default.load(Relaxed) {
+            let current_default = default_output_id();
+            if current_default.is_some() && current_default != last_default {
+                last_default = current_default;
+                if let Some(id) = current_default {
+                    if id != output.device.audio.id {
+                        let device = Device {
+                            name: AudioDevice::new(id)
+                                .name()
+                                .unwrap_or_else(|_| "Unknown".to_string()),
+                            audio: AudioDevice::new(id),
+                        };
+                        if let Some(new_output) =
+                            try_new_output(device, Some(output.sample_rate))
+                        {
+                            drop(stream.take());
+                            output = new_output;
+                            ctx.channels = output.channels;
+                            stream = match start_stream(&output, ctx_ptr) {
+                                Some(s) => Some(s),
+                                None => {
+                                    state.set_error(RuntimeError::StreamStart);
+                                    None
+                                }
+                            };
+                        } else {
+                            state.set_error(RuntimeError::OutputOpen);
+                        }
+                    }
+                }
+            }
+        }
+
+        std::thread::park_timeout(Duration::from_millis(10));
     }
+
+    drop(stream.take());
 }

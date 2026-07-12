@@ -17,6 +17,8 @@ use wasapi::*;
 
 static ONCE: Once = Once::new();
 
+const WAIT_MS: u32 = 50;
+
 pub struct OutputDevices {
     pub enumerator: IMMDeviceEnumerator,
 }
@@ -65,9 +67,8 @@ impl OutputDevices {
 
     pub fn find(&self, device: &str) -> Option<Device> {
         self.devices()
-            .iter()
+            .into_iter()
             .find(|d| d.name.as_str() == device)
-            .cloned()
     }
 }
 
@@ -81,25 +82,41 @@ pub struct Output {
 
 unsafe impl Send for Output {}
 
-pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
+impl Drop for Output {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.client.Stop();
+            if !self.event.is_null() {
+                CloseHandle(self.event);
+                self.event = core::ptr::null_mut();
+            }
+        }
+    }
+}
+
+pub fn try_new_output(device: Device, sample_rate: Option<u32>) -> Option<Output> {
     unsafe {
-        ONCE.call_once(|| CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap());
+        ONCE.call_once(|| {
+            let _ = CoInitializeEx(ConcurrencyModel::MultiThreaded);
+        });
 
-        let client: IAudioClient = device.imm.Activate(ExecutionContext::All).unwrap();
+        let client: IAudioClient = device.imm.Activate(ExecutionContext::All).ok()?;
         let mut format =
-            (client.GetMixFormat().unwrap() as *const _ as *const WAVEFORMATEXTENSIBLE).read();
+            (client.GetMixFormat().ok()? as *const _ as *const WAVEFORMATEXTENSIBLE).read();
 
-        if format.Format.nChannels < 2 {
-            todo!("Support mono devices.");
+        if format.Format.nChannels == 0 {
+            return None;
         }
 
         if let Some(sample_rate) = sample_rate {
-            assert!(COMMON_SAMPLE_RATES.contains(&sample_rate));
+            if !COMMON_SAMPLE_RATES.contains(&sample_rate) {
+                return None;
+            }
             format.Format.nSamplesPerSec = sample_rate;
             format.Format.nAvgBytesPerSec = sample_rate * format.Format.nBlockAlign as u32;
         }
 
-        let (default, _) = client.GetDevicePeriod().unwrap();
+        let (default, _) = client.GetDevicePeriod().ok()?;
 
         client
             .Initialize(
@@ -112,23 +129,32 @@ pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
                 &format as *const _ as *const WAVEFORMATEX,
                 None,
             )
-            .unwrap();
+            .ok()?;
 
         let event = CreateEventA(core::ptr::null_mut(), 0, 0, core::ptr::null_mut());
-        assert!(!event.is_null());
-        client.SetEventHandle(event as isize).unwrap();
+        if event.is_null() {
+            return None;
+        }
+        if client.SetEventHandle(event as isize).is_err() {
+            CloseHandle(event);
+            return None;
+        }
 
-        let render: IAudioRenderClient = client.GetService().unwrap();
-        client.Start().unwrap();
+        let render: IAudioRenderClient = client.GetService().ok()?;
+        client.Start().ok()?;
 
-        Output {
+        Some(Output {
             client,
             render,
             format,
             event,
             device,
-        }
+        })
     }
+}
+
+pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
+    try_new_output(device, sample_rate).expect("failed to open output")
 }
 
 pub fn fill_buffer(
@@ -137,8 +163,20 @@ pub fn fill_buffer(
     decoder: &mut Option<Symphonia>,
 ) -> u32 {
     unsafe {
-        let padding = output.client.GetCurrentPadding().unwrap();
-        let buffer_size = output.client.GetBufferSize().unwrap();
+        let padding = match output.client.GetCurrentPadding() {
+            Ok(p) => p,
+            Err(_) => {
+                state.set_error(RuntimeError::StreamStart);
+                return 0;
+            }
+        };
+        let buffer_size = match output.client.GetBufferSize() {
+            Ok(s) => s,
+            Err(_) => {
+                state.set_error(RuntimeError::StreamStart);
+                return 0;
+            }
+        };
         let block_align = output.format.Format.nBlockAlign;
         let frames = buffer_size - padding;
 
@@ -147,15 +185,25 @@ pub fn fill_buffer(
         }
 
         let size = (frames * block_align as u32) as usize;
-        let ptr = output.render.GetBuffer(frames).unwrap();
+        let ptr = match output.render.GetBuffer(frames) {
+            Ok(p) => p,
+            Err(_) => {
+                state.set_error(RuntimeError::StreamStart);
+                return 0;
+            }
+        };
         let buffer = std::slice::from_raw_parts_mut(ptr, size);
         let channels = output.format.Format.nChannels as usize;
 
         fill_f32_le(state, decoder, buffer, channels);
 
-        output.render.ReleaseBuffer(frames, 0).unwrap();
+        let _ = output.render.ReleaseBuffer(frames, 0);
         frames
     }
+}
+
+fn same_device(a: &Device, b: &Device) -> bool {
+    a.name == b.name
 }
 
 pub fn run_output(state: Arc<PlayerState>, output: Output) {
@@ -164,10 +212,37 @@ pub fn run_output(state: Arc<PlayerState>, output: Output) {
 
         let mut output = Some(output);
         let mut decoder: Option<Symphonia> = None;
+        let devices = OutputDevices::new();
 
         loop {
+            if state.shutdown.load(Relaxed) {
+                break;
+            }
+
             if let Some(new_output) = state.pending_output.take() {
+                if let Some(old) = output.take() {
+                    let _ = old.client.Stop();
+                    drop(old);
+                }
                 output = Some(new_output);
+            }
+
+            if state.follow_default.load(Relaxed) {
+                if let Some(current) = output.as_ref() {
+                    let def = devices.default_device();
+                    if !same_device(&current.device, &def) {
+                        let rate = current.format.Format.nSamplesPerSec;
+                        if let Some(new_output) = try_new_output(def, Some(rate)) {
+                            if let Some(old) = output.take() {
+                                let _ = old.client.Stop();
+                                drop(old);
+                            }
+                            output = Some(new_output);
+                        } else {
+                            state.set_error(RuntimeError::OutputOpen);
+                        }
+                    }
+                }
             }
 
             if let Some(new_decoder) = state.pending_decoder.take() {
@@ -181,7 +256,10 @@ pub fn run_output(state: Arc<PlayerState>, output: Output) {
                 state.decoder_pending.store(false, Relaxed);
             }
 
-            let output = output.as_mut().unwrap();
+            let Some(out) = output.as_mut() else {
+                std::thread::sleep(Duration::from_millis(WAIT_MS as u64));
+                continue;
+            };
 
             let seek = state.seek.swap(u64::MAX, AcqRel);
             if seek != u64::MAX {
@@ -190,7 +268,11 @@ pub fn run_output(state: Arc<PlayerState>, output: Output) {
                 }
             }
 
-            WaitForSingleObject(output.event, u32::MAX);
+            WaitForSingleObject(out.event, WAIT_MS);
+
+            if state.shutdown.load(Relaxed) {
+                break;
+            }
 
             let mut frames = u32::MAX;
 
@@ -198,12 +280,18 @@ pub fn run_output(state: Arc<PlayerState>, output: Output) {
                 if state.state.load(Relaxed) != State::Playing as u8
                     || state.finished.load(Relaxed)
                     || state.decoder_pending.load(Relaxed)
+                    || state.shutdown.load(Relaxed)
                 {
                     break;
                 }
 
-                frames = fill_buffer(&state, output, &mut decoder);
+                frames = fill_buffer(&state, out, &mut decoder);
             }
+        }
+
+        if let Some(out) = output.take() {
+            let _ = out.client.Stop();
+            drop(out);
         }
     }
 }

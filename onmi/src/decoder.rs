@@ -22,9 +22,11 @@ pub struct Symphonia {
     pub track: Track,
     pub error_count: u8,
     pub finished: bool,
-    pub buffer: Option<Vec<f32>>,
+    pub buffer: Vec<f32>,
+    pub buffer_len: usize,
     pub pos: usize,
     pub sample_rate: u32,
+    pub channels: u32,
     pub time_base: TimeBase,
     pub path: PathBuf,
     pub duration: Duration,
@@ -65,12 +67,18 @@ impl Symphonia {
 
         Ok(Self {
             sample_rate: codec_params.sample_rate.unwrap(),
+            channels: codec_params
+                .channels
+                .as_ref()
+                .map(|c| c.count() as u32)
+                .unwrap_or(2),
             format_reader,
             decoder,
             track,
             error_count: 0,
             finished: false,
-            buffer: None,
+            buffer: Vec::new(),
+            buffer_len: 0,
             pos: 0,
             time_base,
             path,
@@ -79,8 +87,12 @@ impl Symphonia {
     }
 
     pub fn seek(&mut self, pos: Duration, state: &PlayerState) {
-        if pos > self.duration {
+        if pos >= self.duration {
             self.finished = true;
+            state.mark_finished();
+            state
+                .elapsed
+                .store(self.duration.as_nanos() as u64, Relaxed);
             return;
         }
 
@@ -96,41 +108,30 @@ impl Symphonia {
             .is_ok()
         {
             self.decoder.reset();
-            self.buffer = None;
+            self.buffer_len = 0;
             self.pos = 0;
             self.finished = false;
+            state.finished.store(false, Relaxed);
         }
 
         state.elapsed.store(pos.as_nanos() as u64, Relaxed);
     }
 
     pub fn next_sample(&mut self, state: &PlayerState) -> Option<f32> {
-        if self.buffer.is_none() {
-            let Some(buffer) = self.next_packet(state) else {
+        if self.pos >= self.buffer_len {
+            if !self.fill_packet(state) {
                 return None;
-            };
-
-            self.buffer = Some(buffer);
-        }
-
-        if let Some(buffer) = &self.buffer {
-            if self.pos < buffer.len() {
-                let sample = buffer[self.pos];
-                self.pos += 1;
-                return Some(sample);
-            } else {
-                self.pos = 0;
-                self.buffer = None;
-                return self.next_sample(state);
             }
         }
 
-        unreachable!()
+        let sample = self.buffer[self.pos];
+        self.pos += 1;
+        Some(sample)
     }
 
-    pub fn next_packet(&mut self, state: &PlayerState) -> Option<Vec<f32>> {
+    fn fill_packet(&mut self, state: &PlayerState) -> bool {
         if self.error_count > 2 || self.finished {
-            return None;
+            return false;
         }
 
         let next_packet = match self.format_reader.next_packet() {
@@ -139,16 +140,17 @@ impl Symphonia {
                 next_packet
             }
             Ok(None) => {
-                return None;
+                self.finished = true;
+                return false;
             }
             Err(_) => {
                 self.error_count += 1;
-                return self.next_packet(state);
+                return self.fill_packet(state);
             }
         };
 
         if next_packet.track_id != self.track.id {
-            return self.next_packet(state);
+            return self.fill_packet(state);
         }
 
         if let Some(time) = self.time_base.calc_time(next_packet.pts) {
@@ -156,7 +158,7 @@ impl Symphonia {
             let elapsed = Duration::from_secs_f64(time);
             if elapsed > self.duration {
                 self.finished = true;
-                return None;
+                return false;
             }
 
             if state.state.load(Relaxed) != State::Stopped as u8 {
@@ -168,13 +170,18 @@ impl Symphonia {
 
         match self.decoder.decode(&next_packet) {
             Ok(decoded) => {
-                let mut buffer = vec![0.0; decoded.samples_interleaved()];
-                decoded.copy_to_slice_interleaved(&mut buffer);
-                Some(buffer)
+                let n = decoded.samples_interleaved();
+                if self.buffer.len() < n {
+                    self.buffer.resize(n, 0.0);
+                }
+                decoded.copy_to_slice_interleaved(&mut self.buffer[..n]);
+                self.buffer_len = n;
+                self.pos = 0;
+                true
             }
             Err(_) => {
                 self.error_count += 1;
-                self.next_packet(state)
+                self.fill_packet(state)
             }
         }
     }

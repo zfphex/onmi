@@ -172,6 +172,10 @@ impl Player {
         Duration::from_nanos(self.state.duration.load(Relaxed))
     }
 
+    pub fn is_finished(&self) -> bool {
+        self.state.finished.load(Relaxed)
+    }
+
     pub fn volume_up(&self) {
         self.set_volume((self.volume() + 5).clamp(0, 100));
     }

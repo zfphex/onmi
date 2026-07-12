@@ -156,6 +156,14 @@ impl Player {
         (f32::from_bits(self.state.volume.load(Relaxed)) * reduction) as u8
     }
 
+    pub fn state(&self) -> State {
+        match self.state.state.load(Relaxed) {
+            x if x == State::Playing as u8 => State::Playing,
+            x if x == State::Paused as u8 => State::Paused,
+            _ => State::Stopped,
+        }
+    }
+
     pub fn elapsed(&self) -> Duration {
         Duration::from_nanos(self.state.elapsed.load(Relaxed))
     }

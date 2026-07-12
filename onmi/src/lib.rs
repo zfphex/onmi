@@ -18,8 +18,8 @@ pub mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::*;
 
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -151,36 +151,41 @@ impl Player {
             .store((volume.clamp(0, 100) as f32 / reduction).to_bits(), Relaxed);
     }
 
-    pub fn volume_up(&self) {
+    pub fn volume(&self) -> u8 {
         let reduction = f32::from_bits(self.state.volume_reduction.load(Relaxed));
-        let volume = (f32::from_bits(self.state.volume.load(Relaxed)) * reduction) as u8;
-        self.set_volume((volume + 5).clamp(0, 100));
+        (f32::from_bits(self.state.volume.load(Relaxed)) * reduction) as u8
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        Duration::from_nanos(self.state.elapsed.load(Relaxed))
+    }
+
+    pub fn duration(&self) -> Duration {
+        Duration::from_nanos(self.state.duration.load(Relaxed))
+    }
+
+    pub fn volume_up(&self) {
+        self.set_volume((self.volume() + 5).clamp(0, 100));
     }
 
     pub fn volume_down(&self) {
-        let reduction = f32::from_bits(self.state.volume_reduction.load(Relaxed));
-        let volume = (f32::from_bits(self.state.volume.load(Relaxed)) * reduction) as u8;
-        self.set_volume(volume.saturating_sub(5).clamp(0, 100));
+        self.set_volume(self.volume().saturating_sub(5).clamp(0, 100));
     }
 
     pub fn seek_to(&self, position: Duration) {
-        self.state
-            .seek
-            .store(position.as_nanos() as u64, Relaxed);
+        self.state.seek.store(position.as_nanos() as u64, Relaxed);
     }
 
     pub fn seek_forward(&self, secs: f32) {
-        let elapsed = Duration::from_nanos(self.state.elapsed.load(Relaxed));
         self.state.seek.store(
-            (elapsed + Duration::from_secs_f32(secs)).as_nanos() as u64,
+            (self.elapsed() + Duration::from_secs_f32(secs)).as_nanos() as u64,
             Relaxed,
         );
     }
 
     pub fn seek_backward(&self, secs: f32) {
-        let elapsed = Duration::from_nanos(self.state.elapsed.load(Relaxed));
         self.state.seek.store(
-            elapsed
+            self.elapsed()
                 .saturating_sub(Duration::from_secs_f32(secs))
                 .as_nanos() as u64,
             Relaxed,

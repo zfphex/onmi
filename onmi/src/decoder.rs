@@ -1,4 +1,6 @@
+use crate::{PlayerState, State};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 use std::{fs::File, path::Path};
 use symphonia::core::formats::{FormatReader, Track, TrackType};
@@ -14,8 +16,6 @@ use symphonia::{
     default::get_probe,
 };
 
-use crate::*;
-
 pub struct Symphonia {
     pub format_reader: Box<dyn FormatReader>,
     pub decoder: Box<dyn AudioDecoder>,
@@ -27,6 +27,7 @@ pub struct Symphonia {
     pub sample_rate: u32,
     pub time_base: TimeBase,
     pub path: PathBuf,
+    pub duration: Duration,
 }
 
 impl Symphonia {
@@ -62,13 +63,6 @@ impl Symphonia {
         let decoder = symphonia::default::get_codecs()
             .make_audio_decoder(codec_params, &AudioDecoderOptions::default())?;
 
-        //Update the elapsed so that it's never out of sync with the duration.
-        //I had a one frame visual bug where the duration was updated before the elapsed was reset.
-        //The decoder will never write when the state is stopped.
-        unsafe { *STATE = State::Stopped }
-        ELAPSED.store(0, Relaxed);
-        unsafe { *DURATION = duration };
-
         Ok(Self {
             sample_rate: codec_params.sample_rate.unwrap(),
             format_reader,
@@ -80,17 +74,16 @@ impl Symphonia {
             pos: 0,
             time_base,
             path,
+            duration,
         })
     }
 
-    pub fn seek(&mut self, pos: Duration) {
-        //TODO: This is pretty scuffed and might break under certain conditions.
-        if unsafe { pos > *DURATION } {
+    pub fn seek(&mut self, pos: Duration, state: &PlayerState) {
+        if pos > self.duration {
             self.finished = true;
             return;
         }
 
-        //Ignore errors.
         if self
             .format_reader
             .seek(
@@ -108,13 +101,12 @@ impl Symphonia {
             self.finished = false;
         }
 
-        ELAPSED.store(pos.as_nanos() as u64, Relaxed);
+        state.elapsed.store(pos.as_nanos() as u64, Relaxed);
     }
 
-    pub fn next_sample(&mut self) -> Option<f32> {
+    pub fn next_sample(&mut self, state: &PlayerState) -> Option<f32> {
         if self.buffer.is_none() {
-            let Some(buffer) = self.next_packet() else {
-                // The player must have finished.
+            let Some(buffer) = self.next_packet(state) else {
                 return None;
             };
 
@@ -129,14 +121,14 @@ impl Symphonia {
             } else {
                 self.pos = 0;
                 self.buffer = None;
-                return self.next_sample();
+                return self.next_sample(state);
             }
         }
 
         unreachable!()
     }
 
-    pub fn next_packet(&mut self) -> Option<Vec<f32>> {
+    pub fn next_packet(&mut self, state: &PlayerState) -> Option<Vec<f32>> {
         if self.error_count > 2 || self.finished {
             return None;
         }
@@ -151,27 +143,24 @@ impl Symphonia {
             }
             Err(_) => {
                 self.error_count += 1;
-                return self.next_packet();
+                return self.next_packet(state);
             }
         };
 
         if next_packet.track_id != self.track.id {
-            return self.next_packet();
+            return self.next_packet(state);
         }
 
         if let Some(time) = self.time_base.calc_time(next_packet.pts) {
-            //IDK sometimes we get negative timestamps I guess 🙄.
             let time = time.as_secs_f64().max(0.0);
-            let duration = Duration::from_secs_f64(time);
-            if unsafe { duration > *DURATION } {
+            let elapsed = Duration::from_secs_f64(time);
+            if elapsed > self.duration {
                 self.finished = true;
                 return None;
             }
 
-            //The elapsed time is reset to zero when playing a new song.
-            //Never overwrite the value when stopped.
-            if unsafe { *STATE != State::Stopped } {
-                ELAPSED.store(duration.as_nanos() as u64, Relaxed);
+            if state.state.load(Relaxed) != State::Stopped as u8 {
+                state.elapsed.store(elapsed.as_nanos() as u64, Relaxed);
             }
         } else {
             unreachable!("Packet is timeless, one cannot be timeless...? Only me 🗿")
@@ -179,14 +168,13 @@ impl Symphonia {
 
         match self.decoder.decode(&next_packet) {
             Ok(decoded) => {
-                //TODO: Don't allocate here.
                 let mut buffer = vec![0.0; decoded.samples_interleaved()];
                 decoded.copy_to_slice_interleaved(&mut buffer);
                 Some(buffer)
             }
             Err(_) => {
                 self.error_count += 1;
-                self.next_packet()
+                self.next_packet(state)
             }
         }
     }

@@ -1,12 +1,12 @@
-#![allow(static_mut_refs)]
-
 pub mod decoder;
+pub mod engine;
 pub mod metadata;
-pub mod thread_cell;
+pub mod state;
 
 pub use decoder::*;
+pub use engine::*;
 pub use metadata::*;
-pub use thread_cell::*;
+pub use state::*;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -14,15 +14,14 @@ pub mod macos;
 pub use macos::*;
 
 #[cfg(target_os = "windows")]
-pub use windows::*;
-#[cfg(target_os = "windows")]
 pub mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::*;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::Arc;
 use std::time::Duration;
 
-//Scale the volume (0 - 100) down to something more reasonable to listen to.
-//TODO: This should be configurable.
 pub const VOLUME_REDUCTION: f32 = 75.0;
 pub const UNKNOWN_TITLE: &str = "UnknownTitle";
 pub const UNKNOWN_ALBUM: &str = "Unknown Album";
@@ -31,101 +30,53 @@ pub const COMMON_SAMPLE_RATES: [u32; 13] = [
     5512, 8000, 11025, 16000, 22050, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000,
 ];
 
-//If this is `Some` the playback thread will take it and move it into the local thread.
-//This can write from both threads but _should_ never double write.
-static mut NEXT_DECODER: Option<Symphonia> = None;
-static mut NEXT_OUTPUT: Option<Output> = None;
-
-//Should be fine
-static mut VOLUME: ThreadCell<f32> = ThreadCell::new((15.0 / VOLUME_REDUCTION) * 0.5);
-static mut GAIN: ThreadCell<f32> = ThreadCell::new(0.5);
-static mut DURATION: ThreadCell<Duration> = ThreadCell::new(Duration::new(0, 0));
-static mut STATE: ThreadCell<State> = ThreadCell::new(State::Stopped);
-
-//There is some weird behaviour after the playback thread stops.
-//Ideally something else would start the thread up
-//and this would only be written on the playback thread.
-static FINISHED: AtomicBool = AtomicBool::new(false);
-static DECODER_PENDING: AtomicBool = AtomicBool::new(false);
-
-//Seeking can change this value from any thread.
-static ELAPSED: AtomicU64 = AtomicU64::new(0);
-
-//Just use the max value as None/not seeking.
-static SEEK: AtomicU64 = AtomicU64::new(u64::MAX);
-
-#[derive(PartialEq, Clone, Debug)]
+#[repr(u8)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum State {
-    Playing,
-    Paused,
-    Stopped,
+    Playing = 0,
+    Paused = 1,
+    Stopped = 2,
 }
 
 pub struct Player {
-    //Force !Send + !Sync
-    //User's should not access the player from multiple threads.
-    //TODO: Actually I want to defer creation of the player onto a new thread since it's really slow...
-    //I feel like the language doesn't allow me to prevent misuse here 🤔.
-    // _phantom: std::marker::PhantomData<*const ()>,
-
-    //We only use this to update the sample rate
-    //when the Output isn't some yet.
+    pub state: Arc<PlayerState>,
     pub device: Device,
     pub current_song_sample_rate: Option<u32>,
 }
 
 impl Player {
     pub fn new(device: Device) -> Self {
-        //TODO: Currently the library cannot handle changing output devices.
-        //Windows requires that output devices be destroyed (sometimes) to change sample rates.
-        //Not sure how to handle swapping output devices.
+        let state = PlayerState::global();
         let d = device.clone();
+        let thread_state = Arc::clone(&state);
         std::thread::spawn(move || {
-            run_output(new_output(d, None));
+            run_output(thread_state, new_output(d, None));
         });
 
         Self {
+            state,
             device,
             current_song_sample_rate: None,
-            // _phantom: std::marker::PhantomData,
         }
     }
 
-    pub fn state(&self) -> State {
-        unsafe { (*STATE).clone() }
-    }
-
-    pub fn elapsed(&self) -> Duration {
-        Duration::from_nanos(ELAPSED.load(Relaxed))
-    }
-
-    pub fn duration(&self) -> Duration {
-        unsafe { *DURATION }
-    }
-
     pub fn toggle_playback(&self) {
-        unsafe {
-            if *STATE == State::Paused {
-                *STATE = State::Playing;
-            } else if *STATE == State::Playing {
-                *STATE = State::Paused;
-            }
+        let state = self.state.state.load(Relaxed);
+        if state == State::Paused as u8 {
+            self.state.state.store(State::Playing as u8, Relaxed);
+        } else if state == State::Playing as u8 {
+            self.state.state.store(State::Paused as u8, Relaxed);
         }
     }
 
     pub fn stop(&self) {
-        unsafe { *STATE = State::Stopped };
-
-        //This could cause UB.
-        // unsafe { DECODER = None };
+        self.state.state.store(State::Stopped as u8, Relaxed);
     }
 
     pub fn play_song(
         &mut self,
         path: impl AsRef<std::path::Path>,
-        //Set how the volume should be scaled.
         replay_gain: Option<f32>,
-        //Can start the player paused.
         start_playback: bool,
     ) -> Result<(), String> {
         let decoder = match Symphonia::new(&path) {
@@ -138,75 +89,85 @@ impl Player {
             }
         };
 
-        //Update the sample rate if it's different, or it hasn't been set yet.
         if self.current_song_sample_rate.unwrap_or_default() != decoder.sample_rate {
-            unsafe {
-                NEXT_OUTPUT = Some(new_output(self.device.clone(), Some(decoder.sample_rate)))
-            };
+            self.state
+                .pending_output
+                .publish(new_output(self.device.clone(), Some(decoder.sample_rate)));
         }
 
         self.current_song_sample_rate = Some(decoder.sample_rate);
 
-        //Default to half volume, not sure if this is a good deafult.
-        //Some songs don't have replay gain values and this reduces the volume jump between songs.
-        unsafe { *GAIN = replay_gain.unwrap_or(0.5) }
-
-        DECODER_PENDING.store(true, Relaxed);
-        unsafe { NEXT_DECODER = Some(decoder) };
+        self.state.state.store(State::Stopped as u8, Relaxed);
+        self.state.elapsed.store(0, Relaxed);
+        self.state
+            .duration
+            .store(decoder.duration.as_nanos() as u64, Relaxed);
+        self.state
+            .gain
+            .store(replay_gain.unwrap_or(0.5).to_bits(), Relaxed);
+        self.state.decoder_pending.store(true, Relaxed);
+        self.state.pending_decoder.publish(decoder);
 
         if start_playback {
-            unsafe { *STATE = State::Playing };
+            self.state.state.store(State::Playing as u8, Relaxed);
         } else {
-            unsafe { *STATE = State::Paused };
+            self.state.state.store(State::Paused as u8, Relaxed);
         }
 
         Ok(())
     }
 
     pub fn play(&self) {
-        unsafe { *STATE = State::Playing };
+        self.state.state.store(State::Playing as u8, Relaxed);
     }
 
     pub fn pause(&self) {
-        unsafe { *STATE = State::Paused };
+        self.state.state.store(State::Paused as u8, Relaxed);
     }
 
     pub fn set_volume(&self, volume: u8) {
-        unsafe { *VOLUME = volume.clamp(0, 100) as f32 / VOLUME_REDUCTION }
+        self.state
+            .volume
+            .store((volume.clamp(0, 100) as f32 / VOLUME_REDUCTION).to_bits(), Relaxed);
     }
 
     pub fn volume_up(&self) {
-        self.set_volume((self.volume() + 5).clamp(0, 100))
+        let volume = (f32::from_bits(self.state.volume.load(Relaxed)) * VOLUME_REDUCTION) as u8;
+        self.set_volume((volume + 5).clamp(0, 100));
     }
 
     pub fn volume_down(&self) {
-        self.set_volume((self.volume().saturating_sub(5)).clamp(0, 100))
-    }
-
-    pub fn volume(&self) -> u8 {
-        (unsafe { *VOLUME } * VOLUME_REDUCTION) as u8
+        let volume = (f32::from_bits(self.state.volume.load(Relaxed)) * VOLUME_REDUCTION) as u8;
+        self.set_volume(volume.saturating_sub(5).clamp(0, 100));
     }
 
     pub fn seek_to(&self, position: Duration) {
-        SEEK.store(position.as_nanos() as u64, Relaxed);
+        self.state
+            .seek
+            .store(position.as_nanos() as u64, Relaxed);
     }
 
     pub fn seek_forward(&self, secs: f32) {
-        let duration = self.elapsed() + Duration::from_secs_f32(secs);
-        SEEK.store(duration.as_nanos() as u64, Relaxed);
+        let elapsed = Duration::from_nanos(self.state.elapsed.load(Relaxed));
+        self.state
+            .seek
+            .store((elapsed + Duration::from_secs_f32(secs)).as_nanos() as u64, Relaxed);
     }
 
     pub fn seek_backward(&self, secs: f32) {
-        let duration = self.elapsed().saturating_sub(Duration::from_secs_f32(secs));
-        SEEK.store(duration.as_nanos() as u64, Relaxed);
-    }
-
-    pub fn is_finished(&self) -> bool {
-        FINISHED.load(Relaxed)
+        let elapsed = Duration::from_nanos(self.state.elapsed.load(Relaxed));
+        self.state.seek.store(
+            elapsed
+                .saturating_sub(Duration::from_secs_f32(secs))
+                .as_nanos() as u64,
+            Relaxed,
+        );
     }
 
     pub fn set_output_device(&mut self, device: Device) {
         self.device = device.clone();
-        unsafe { NEXT_OUTPUT = Some(new_output(device, self.current_song_sample_rate)) };
+        self.state
+            .pending_output
+            .publish(new_output(device, self.current_song_sample_rate));
     }
 }

@@ -10,13 +10,11 @@ unsafe impl Send for Device {}
 unsafe impl Sync for Device {}
 
 use crate::*;
-use std::{
-    sync::Once,
-    time::{Duration, Instant},
-};
+use std::sync::atomic::Ordering::{AcqRel, Relaxed};
+use std::sync::{Arc, Once};
+use std::time::Duration;
 use wasapi::*;
 
-//Initialise the COM library.
 static ONCE: Once = Once::new();
 
 pub struct OutputDevices {
@@ -81,6 +79,8 @@ pub struct Output {
     pub device: Device,
 }
 
+unsafe impl Send for Output {}
+
 pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
     unsafe {
         ONCE.call_once(|| CoInitializeEx(ConcurrencyModel::MultiThreaded).unwrap());
@@ -93,7 +93,6 @@ pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
             todo!("Support mono devices.");
         }
 
-        //Update format to desired sample rate.
         if let Some(sample_rate) = sample_rate {
             assert!(COMMON_SAMPLE_RATES.contains(&sample_rate));
             format.Format.nSamplesPerSec = sample_rate;
@@ -132,14 +131,11 @@ pub fn new_output(device: Device, sample_rate: Option<u32>) -> Output {
     }
 }
 
-pub fn update_sample_rate(output: &mut Output, sample_rate: u32) {
-    if output.format.Format.nSamplesPerSec != sample_rate {
-        unsafe { output.client.Stop().unwrap() };
-        *output = new_output(output.device.clone(), Some(sample_rate));
-    }
-}
-
-pub fn fill_buffer(output: &Output, decoder: &mut Option<Symphonia>) -> u32 {
+pub fn fill_buffer(
+    state: &PlayerState,
+    output: &Output,
+    decoder: &mut Option<Symphonia>,
+) -> u32 {
     unsafe {
         let padding = output.client.GetCurrentPadding().unwrap();
         let buffer_size = output.client.GetBufferSize().unwrap();
@@ -155,120 +151,58 @@ pub fn fill_buffer(output: &Output, decoder: &mut Option<Symphonia>) -> u32 {
         let buffer = std::slice::from_raw_parts_mut(ptr, size);
         let channels = output.format.Format.nChannels as usize;
 
-        buffer.fill(0);
-
-        //Don't abruptly change the volume/gain when filling packets.
-        //I don't know how much overhead a threadcell creates. Maybe it's fine?
-        let volume = *VOLUME;
-        let gain = *GAIN;
-
-        'outer: for bytes in buffer.chunks_mut(std::mem::size_of::<f32>() * channels) {
-            //Do not read the the decoder if it's finished.
-            //This could reset the finished state and cause songs to skip.
-            if FINISHED.load(Relaxed) {
-                break;
-            }
-
-            //Only allow for stereo outputs.
-            for c in 0..channels.min(2) {
-                if let Some(decoder) = decoder {
-                    let sample = decoder.next_sample();
-
-                    if sample.is_none() {
-                        // eprintln!("Finished (fill_buffer) sample.is_none()");
-                        FINISHED.store(true, Relaxed);
-                        //Make sure finished isn't set to true again.
-                        break 'outer;
-                    }
-
-                    let sample = sample.unwrap_or_default();
-                    let value = (sample * volume * gain).to_le_bytes();
-                    bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
-                } else {
-                    break 'outer;
-                }
-            }
-        }
+        fill_f32_le(state, decoder, buffer, channels);
 
         output.render.ReleaseBuffer(frames, 0).unwrap();
-        return frames;
+        frames
     }
 }
 
-//TODO: How can I log the errors from here?
-//Maybe some type of callback?
-pub fn run_output(output: Output) {
+pub fn run_output(state: Arc<PlayerState>, output: Output) {
     unsafe {
-        let (period, _) = output.client.GetDevicePeriod().unwrap();
-        let mut period = Duration::from_nanos(period as u64 * 100);
-        let mut last_event = Instant::now();
-
         set_pro_audio_thread();
 
         let mut output = Some(output);
         let mut decoder: Option<Symphonia> = None;
 
         loop {
-            if let Some(new_output) = NEXT_OUTPUT.take() {
-                let (device_period, _) = new_output.client.GetDevicePeriod().unwrap();
-                period = Duration::from_nanos(device_period as u64 * 100);
+            if let Some(new_output) = state.pending_output.take() {
                 output = Some(new_output);
             }
 
-            if let Some(new_decoder) = NEXT_DECODER.take() {
-                FINISHED.store(false, Relaxed);
+            if let Some(new_decoder) = state.pending_decoder.take() {
+                state.finished.store(false, Relaxed);
                 if let Some(out) = output.as_ref() {
                     let _ = out.client.Stop();
                     let _ = out.client.Reset();
                     let _ = out.client.Start();
                 }
                 decoder = Some(new_decoder);
-                DECODER_PENDING.store(false, Relaxed);
+                state.decoder_pending.store(false, Relaxed);
             }
 
-            //There should always be a valid output device.
-            //Otherwise there would be no event handle and we couldn't wait.
             let output = output.as_mut().unwrap();
 
-            //Seek if the user wants too :)
-            let seek = SEEK.load(Relaxed);
+            let seek = state.seek.swap(u64::MAX, AcqRel);
             if seek != u64::MAX {
                 if let Some(decoder) = decoder.as_mut() {
-                    decoder.seek(Duration::from_nanos(seek));
+                    decoder.seek(Duration::from_nanos(seek), &state);
                 }
-                SEEK.store(u64::MAX, Relaxed);
             }
 
             WaitForSingleObject(output.event, u32::MAX);
 
-            let now = Instant::now();
-            let elapsed = now - last_event;
-            last_event = now;
-
-            if elapsed > period + Duration::from_millis(2) {
-                // eprintln!("WARNING: Waited {:?} (expected {:?})", elapsed, period);
-            }
-
-            let mut i = 0;
             let mut frames = u32::MAX;
 
             while frames != 0 {
-                if *STATE != State::Playing
-                    || FINISHED.load(Relaxed)
-                    || DECODER_PENDING.load(Relaxed)
+                if state.state.load(Relaxed) != State::Playing as u8
+                    || state.finished.load(Relaxed)
+                    || state.decoder_pending.load(Relaxed)
                 {
                     break;
                 }
 
-                frames = fill_buffer(&output, &mut decoder);
-
-                if i > 1 {
-                    // eprintln!(
-                    //     "WARNING: Missed event(s) or underflow, buffer had space for {} frames! iteration: {}",
-                    //     frames, i
-                    // );
-                }
-                i += 1;
+                frames = fill_buffer(&state, output, &mut decoder);
             }
         }
     }

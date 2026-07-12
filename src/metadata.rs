@@ -1,3 +1,4 @@
+use crate::*;
 use std::{
     fs::File,
     io::{BufReader, Read},
@@ -12,7 +13,6 @@ use symphonia::{
     },
     default::get_probe,
 };
-use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Song {
@@ -23,6 +23,7 @@ pub struct Song {
     pub disc_number: u8,
     pub track_number: u8,
     pub gain: f32,
+    pub year: u16,
 }
 
 impl Song {
@@ -35,7 +36,17 @@ impl Song {
             disc_number: 1,
             track_number: 1,
             gain: 0.0,
+            year: 0,
         }
+    }
+}
+
+pub fn parse_year(s: &str) -> u16 {
+    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.len() >= 4 {
+        digits[..4].parse().unwrap_or(0)
+    } else {
+        0
     }
 }
 
@@ -43,7 +54,8 @@ pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, S
     let path = path.as_ref();
     let extension = path.extension().ok_or("Path is not audio")?;
 
-    if extension == "flac" && !force_symphonia {
+    let is_flac = extension.eq_ignore_ascii_case("flac");
+    if is_flac && !force_symphonia {
         return flac_metadata(path)
             .map_err(|err| format!("Error: ({err}) @ {}", path.to_string_lossy()));
     }
@@ -72,6 +84,7 @@ pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, S
     let mut track_number = 1;
     let mut disc_number = 1;
     let mut gain = 0.0;
+    let mut year = 0u16;
 
     let mut metadata = format_reader.metadata();
     if let Some(latest_revision) = metadata.skip_to_latest() {
@@ -89,6 +102,22 @@ pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, S
                     }
                     StandardTag::DiscNumber(num) => {
                         disc_number = *num as _;
+                    }
+                    StandardTag::ReleaseYear(y)
+                    | StandardTag::RecordingYear(y)
+                    | StandardTag::OriginalReleaseYear(y)
+                    | StandardTag::OriginalRecordingYear(y) => {
+                        if year == 0 {
+                            year = *y;
+                        }
+                    }
+                    StandardTag::ReleaseDate(tag)
+                    | StandardTag::RecordingDate(tag)
+                    | StandardTag::OriginalReleaseDate(tag)
+                    | StandardTag::OriginalRecordingDate(tag) => {
+                        if year == 0 {
+                            year = parse_year(tag);
+                        }
                     }
                     StandardTag::ReplayGainTrackGain(tag) => {
                         if let Some((_, tague)) = tag.split_once(' ') {
@@ -110,6 +139,7 @@ pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, S
         track_number,
         path: path.to_str().ok_or("Invalid UTF-8 in path.")?.to_string(),
         gain,
+        year,
     })
 }
 
@@ -177,6 +207,11 @@ pub fn flac_metadata(path: impl AsRef<Path>) -> Result<Song, Box<dyn std::error:
                     "album" => song.album = v.to_string(),
                     "tracknumber" => song.track_number = v.parse().unwrap_or(1),
                     "discnumber" => song.disc_number = v.parse().unwrap_or(1),
+                    "date" | "year" | "originaldate" | "originalyear" => {
+                        if song.year == 0 {
+                            song.year = parse_year(v);
+                        }
+                    }
                     "replaygain_track_gain" => {
                         //Remove the trailing " dB" from "-5.39 dB".
                         if let Some(slice) = v.get(..v.len() - 3) {

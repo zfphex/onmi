@@ -144,6 +144,8 @@ pub fn fill_buffer(output: &Output, decoder: &mut Option<Symphonia>) -> u32 {
         let buffer = std::slice::from_raw_parts_mut(ptr, size);
         let channels = output.format.Format.nChannels as usize;
 
+        buffer.fill(0);
+
         //Don't abruptly change the volume/gain when filling packets.
         //I don't know how much overhead a threadcell creates. Maybe it's fine?
         let volume = *VOLUME;
@@ -172,8 +174,7 @@ pub fn fill_buffer(output: &Output, decoder: &mut Option<Symphonia>) -> u32 {
                     let value = (sample * volume * gain).to_le_bytes();
                     bytes[c * 4..c * 4 + 4].copy_from_slice(&value);
                 } else {
-                    //If there is no decoder, just fill with zeroes.
-                    bytes[c * 4..c * 4 + 4].fill(0);
+                    break 'outer;
                 }
             }
         }
@@ -205,7 +206,13 @@ pub fn run(output: Output) {
 
             if let Some(new_decoder) = NEXT_DECODER.take() {
                 FINISHED.store(false, Relaxed);
+                if let Some(out) = output.as_ref() {
+                    let _ = out.client.Stop();
+                    let _ = out.client.Reset();
+                    let _ = out.client.Start();
+                }
                 decoder = Some(new_decoder);
+                DECODER_PENDING.store(false, Relaxed);
             }
 
             //There should always be a valid output device.
@@ -235,7 +242,10 @@ pub fn run(output: Output) {
             let mut frames = u32::MAX;
 
             while frames != 0 {
-                if *STATE != State::Playing || FINISHED.load(Relaxed) {
+                if *STATE != State::Playing
+                    || FINISHED.load(Relaxed)
+                    || DECODER_PENDING.load(Relaxed)
+                {
                     break;
                 }
 

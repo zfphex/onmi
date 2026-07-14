@@ -241,13 +241,16 @@ pub fn flac_metadata(path: impl AsRef<Path>) -> Result<Song, Box<dyn std::error:
 #[cfg(test)]
 #[cfg(target_os = "windows")]
 mod tests {
+    use std::time::Instant;
+
     use crate::*;
 
     #[test]
     fn test() {
         const PATH: &str = "D:\\OneDrive\\Music";
 
-        let paths: Vec<winwalk::DirEntry> = winwalk::walkdir(PATH, 0)
+        let now = Instant::now();
+        let paths: Vec<miniwalk::DirEntry> = miniwalk::walkdir(PATH, 0)
             .into_iter()
             .flatten()
             .filter(|entry| match entry.extension() {
@@ -262,10 +265,10 @@ mod tests {
             .iter()
             .map(|file| {
                 flac_metadata(&file.path)
-                    .map_err(|err| format!("Error: ({err}) @ {}", file.path.to_string()))
+                    .map_err(|err| format!("Error: ({err}) @ {}", file.path.to_string_lossy()))
             })
             .collect();
 
-        dbg!(&songs[0].as_ref().unwrap());
+        println!("Found {} songs in {:?}", songs.len(), now.elapsed());
     }
 }

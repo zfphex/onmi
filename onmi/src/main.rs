@@ -23,7 +23,6 @@ fn main() {
 
     println!("Playing: {path}");
     player.play_song(&path, None, true).unwrap();
-    player.set_volume(50);
 
     std::thread::park();
 }

@@ -194,7 +194,9 @@ pub fn flac_metadata(path: impl AsRef<Path>) -> Result<Song, Box<dyn std::error:
                 let mut buffer = vec![0; length as usize];
                 reader.read_exact(&mut buffer)?;
 
-                let tag = core::str::from_utf8(&buffer).unwrap();
+                let Ok(tag) = core::str::from_utf8(&buffer) else {
+                    return Err(format!("Invalid utf8 in {}", path.as_ref().display()))?;
+                };
                 let (k, v) = match tag.split_once('=') {
                     Some((left, right)) => (left, right),
                     None => (tag, ""),

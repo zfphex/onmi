@@ -5,7 +5,7 @@ use onmi::*;
 fn custom(files: &[DirEntry]) -> Vec<Result<Song, String>> {
     files
         .iter()
-        .map(|file| match flac_metadata(&file.path) {
+        .map(|file| match flac_metadata(&file.path, false) {
             Ok(song) => Ok(song),
             Err(err) => Err(format!("Error: ({err}) @ {}", file.path.display())),
         })
@@ -15,11 +15,15 @@ fn custom(files: &[DirEntry]) -> Vec<Result<Song, String>> {
 fn symphonia(files: &[DirEntry]) -> Vec<Result<Song, String>> {
     files
         .iter()
-        .map(|entry| metadata(&entry.path, true))
+        .map(|entry| metadata(&entry.path, true, false))
         .collect()
 }
 
+#[cfg(target_os = "windows")]
 const PATH: &str = "D:\\OneDrive\\Music";
+
+#[cfg(target_os = "macos")]
+const PATH: &str = "/Users/bay/Music/gdrive";
 
 fn flac(c: &mut Criterion) {
     let mut group = c.benchmark_group("flac");

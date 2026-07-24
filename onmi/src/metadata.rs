@@ -4,7 +4,8 @@ use std::{
     io::{BufReader, Read},
     path::Path,
 };
-use symphonia::core::meta::StandardTag;
+use symphonia::core::common::Limit;
+use symphonia::core::meta::{StandardTag, StandardVisualKey};
 use symphonia::{
     core::{
         formats::{FormatOptions, probe::Hint},
@@ -13,6 +14,12 @@ use symphonia::{
     },
     default::get_probe,
 };
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Artwork {
+    pub mime: String,
+    pub data: Vec<u8>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Song {
@@ -24,6 +31,7 @@ pub struct Song {
     pub track_number: u8,
     pub gain: f32,
     pub year: u16,
+    pub artwork: Option<Artwork>,
 }
 
 impl Song {
@@ -37,6 +45,7 @@ impl Song {
             track_number: 1,
             gain: 0.0,
             year: 0,
+            artwork: None,
         }
     }
 }
@@ -50,13 +59,17 @@ pub fn parse_year(s: &str) -> u16 {
     }
 }
 
-pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, String> {
+pub fn metadata(
+    path: impl AsRef<Path>,
+    force_symphonia: bool,
+    load_artwork: bool,
+) -> Result<Song, String> {
     let path = path.as_ref();
     let extension = path.extension().ok_or("Path is not audio")?;
 
     let is_flac = extension.eq_ignore_ascii_case("flac");
     if is_flac && !force_symphonia {
-        return flac_metadata(path)
+        return flac_metadata(path, load_artwork)
             .map_err(|err| format!("Error: ({err}) @ {}", path.to_string_lossy()));
     }
 
@@ -66,13 +79,18 @@ pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, S
     };
 
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let meta_opts = if load_artwork {
+        MetadataOptions::default()
+    } else {
+        MetadataOptions::default().limit_visual_bytes(Limit::Maximum(0))
+    };
     let mut format_reader = match get_probe().probe(
         &Hint::new(),
         mss,
         FormatOptions::default()
             .prebuild_seek_index(false)
             .seek_index_fill_period_ms(20),
-        MetadataOptions::default(),
+        meta_opts,
     ) {
         Ok(format_reader) => format_reader,
         Err(err) => return Err(format!("Error: ({err}) @ {}", path.to_string_lossy()))?,
@@ -85,6 +103,7 @@ pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, S
     let mut disc_number = 1;
     let mut gain = 0.0;
     let mut year = 0u16;
+    let mut artwork = None;
 
     let mut metadata = format_reader.metadata();
     if let Some(latest_revision) = metadata.skip_to_latest() {
@@ -129,6 +148,21 @@ pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, S
                 }
             }
         }
+
+        if load_artwork {
+            for visual in &latest_revision.media.visuals {
+                let is_front = matches!(visual.usage, Some(StandardVisualKey::FrontCover) | None);
+                if is_front || artwork.is_none() {
+                    artwork = Some(Artwork {
+                        mime: visual.media_type.clone().unwrap_or_default(),
+                        data: visual.data.to_vec(),
+                    });
+                    if matches!(visual.usage, Some(StandardVisualKey::FrontCover)) {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     Ok(Song {
@@ -140,6 +174,7 @@ pub fn metadata(path: impl AsRef<Path>, force_symphonia: bool) -> Result<Song, S
         path: path.to_str().ok_or("Invalid UTF-8 in path.")?.to_string(),
         gain,
         year,
+        artwork,
     })
 }
 
@@ -157,7 +192,17 @@ pub fn u32_le(reader: &mut BufReader<File>) -> u32 {
     u32::from_le_bytes(buffer)
 }
 
-pub fn flac_metadata(path: impl AsRef<Path>) -> Result<Song, Box<dyn std::error::Error>> {
+#[inline]
+pub fn u32_be(reader: &mut BufReader<File>) -> u32 {
+    let mut buffer = [0; 4];
+    reader.read_exact(&mut buffer).unwrap();
+    u32::from_be_bytes(buffer)
+}
+
+pub fn flac_metadata(
+    path: impl AsRef<Path>,
+    load_artwork: bool,
+) -> Result<Song, Box<dyn std::error::Error>> {
     let file = File::open(&path)?;
     let mut reader = BufReader::new(file);
 
@@ -172,6 +217,8 @@ pub fn flac_metadata(path: impl AsRef<Path>) -> Result<Song, Box<dyn std::error:
     song.path = path.as_ref().to_string_lossy().to_string();
 
     let mut flag = [0; 1];
+    let mut got_comments = false;
+    let mut has_front_cover = false;
 
     loop {
         reader.read_exact(&mut flag)?;
@@ -183,61 +230,94 @@ pub fn flac_metadata(path: impl AsRef<Path>) -> Result<Song, Box<dyn std::error:
         let block_type = flag[0] & 0x7f;
         let block_len = u24_be(&mut reader);
 
-        //VorbisComment https://www.xiph.org/vorbis/doc/v-comment.html
-        if block_type == 4 {
-            let vendor_length = u32_le(&mut reader);
-            reader.seek_relative(vendor_length as i64)?;
+        match block_type {
+            // VorbisComment https://www.xiph.org/vorbis/doc/v-comment.html
+            4 => {
+                let vendor_length = u32_le(&mut reader);
+                reader.seek_relative(vendor_length as i64)?;
 
-            let comment_list_length = u32_le(&mut reader);
-            for _ in 0..comment_list_length {
-                let length = u32_le(&mut reader) as usize;
-                let mut buffer = vec![0; length as usize];
-                reader.read_exact(&mut buffer)?;
+                let comment_list_length = u32_le(&mut reader);
+                for _ in 0..comment_list_length {
+                    let length = u32_le(&mut reader) as usize;
+                    let mut buffer = vec![0; length];
+                    reader.read_exact(&mut buffer)?;
 
-                let Ok(tag) = core::str::from_utf8(&buffer) else {
-                    return Err(format!("Invalid utf8 in {}", path.as_ref().display()))?;
-                };
-                let (k, v) = match tag.split_once('=') {
-                    Some((left, right)) => (left, right),
-                    None => (tag, ""),
-                };
+                    let Ok(tag) = core::str::from_utf8(&buffer) else {
+                        return Err(format!("Invalid utf8 in {}", path.as_ref().display()))?;
+                    };
+                    let (k, v) = match tag.split_once('=') {
+                        Some((left, right)) => (left, right),
+                        None => (tag, ""),
+                    };
 
-                match k.to_ascii_lowercase().as_str() {
-                    "albumartist" => song.artist = v.to_string(),
-                    "artist" if song.artist == UNKNOWN_ARTIST => song.artist = v.to_string(),
-                    "title" => song.title = v.to_string(),
-                    "album" => song.album = v.to_string(),
-                    "tracknumber" => song.track_number = v.parse().unwrap_or(1),
-                    "discnumber" => song.disc_number = v.parse().unwrap_or(1),
-                    "date" | "year" | "originaldate" | "originalyear" => {
-                        if song.year == 0 {
-                            song.year = parse_year(v);
-                        }
-                    }
-                    "replaygain_track_gain" => {
-                        //Remove the trailing " dB" from "-5.39 dB".
-                        if let Some(slice) = v.get(..v.len() - 3) {
-                            if let Ok(db) = slice.parse::<f32>() {
-                                song.gain = 10.0f32.powf(db / 20.0);
+                    match k.to_ascii_lowercase().as_str() {
+                        "albumartist" => song.artist = v.to_string(),
+                        "artist" if song.artist == UNKNOWN_ARTIST => song.artist = v.to_string(),
+                        "title" => song.title = v.to_string(),
+                        "album" => song.album = v.to_string(),
+                        "tracknumber" => song.track_number = v.parse().unwrap_or(1),
+                        "discnumber" => song.disc_number = v.parse().unwrap_or(1),
+                        "date" | "year" | "originaldate" | "originalyear" => {
+                            if song.year == 0 {
+                                song.year = parse_year(v);
                             }
                         }
+                        "replaygain_track_gain" => {
+                            // Remove the trailing " dB" from "-5.39 dB".
+                            if let Some(slice) = v.get(..v.len() - 3) {
+                                if let Ok(db) = slice.parse::<f32>() {
+                                    song.gain = 10.0f32.powf(db / 20.0);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                }
+
+                got_comments = true;
+                if !load_artwork {
+                    return Ok(song);
                 }
             }
+            // Picture
+            6 if load_artwork && !has_front_cover => {
+                let pic_type = u32_be(&mut reader);
 
-            return Ok(song);
+                let mime_len = u32_be(&mut reader) as usize;
+                let mut mime = vec![0; mime_len];
+                reader.read_exact(&mut mime)?;
+                let mime = String::from_utf8_lossy(&mime).into_owned();
+
+                let desc_len = u32_be(&mut reader) as i64;
+                reader.seek_relative(desc_len)?;
+
+                // width, height, depth, indexed colors
+                reader.seek_relative(16)?;
+
+                let data_len = u32_be(&mut reader) as usize;
+                let mut data = vec![0; data_len];
+                reader.read_exact(&mut data)?;
+
+                if pic_type == 3 || song.artwork.is_none() {
+                    song.artwork = Some(Artwork { mime, data });
+                    has_front_cover = true;
+                }
+            }
+            _ => {
+                reader.seek_relative(block_len as i64)?;
+            }
         }
 
-        reader.seek_relative(block_len as i64)?;
-
-        // Exit when the last header is read.
         if is_last {
             break;
         }
     }
 
-    Err("Could not parse metadata.")?
+    if got_comments {
+        Ok(song)
+    } else {
+        Err("Could not parse metadata.")?
+    }
 }
 
 #[cfg(test)]
@@ -266,7 +346,7 @@ mod tests {
         let songs: Vec<Result<Song, String>> = paths
             .iter()
             .map(|file| {
-                flac_metadata(&file.path)
+                flac_metadata(&file.path, false)
                     .map_err(|err| format!("Error: ({err}) @ {}", file.path.to_string_lossy()))
             })
             .collect();
